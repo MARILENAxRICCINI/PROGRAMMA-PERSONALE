@@ -1,0 +1,1870 @@
+<!DOCTYPE html>
+<!--
+  PROGRAMMA SETTIMANALE PERSONALE REPARTI - file unico HTML/CSS/JS, senza librerie.
+  Il programma va dal lunedì ore 06:00 al sabato ore 06:00 (5 giorni di turno: lun-ven).
+  Struttura dei dati (salvati come JSON):
+    dati/anagrafica  = { versione:4, prepDow:4|5|6 (giorno in cui si prepara la settimana dopo),
+                         reparti:[{id,nome,giornaliero,std:{idTurno:numero}}],
+                         turni:[{id,nome,orario}]   // mattina, pomeriggio, notte, giornaliero
+                         rotazione:{rif:"AAAA-MM-GG (un lunedì)", A:idTurno, passo:1|2},
+                         dipendenti:[{id,nome,reparto,squadra:"A"|"B"|"C"|"G"|"",ruolo,competenze:[idReparto],noTurni:[idTurno],sqPref:"A"|"B"|"C"|"",coppie:{idReparto:[idDip]},malattia:{dal,fino}|null,note}] }   // malattia: assente in ogni settimana tra dal e fino   // coppie: in quel reparto lavora solo insieme ad almeno una di queste persone   // sqPref: squadra di preferenza dei jolly   // noTurni: turni che la persona non può fare
+    giorni/AAAA-MM-GG   = { assenze:{idDip:{tipo,nota}},
+                            assegnazioni:{idDip:{rep,turno} | {riserva:true}},   // solo gli spostamenti rispetto alla squadra
+                            fabbisogno:{idReparto:{idTurno:numero}} | null }   // non più usato: il fabbisogno è settimanale (settimane/.fabbisogno)
+    settimane/AAAA-MM-GG (lunedì) = { rotazione:{A,B,C} | null,   // eventuale rotazione cambiata a mano per quella settimana
+                                      jolly:{idDip:idTurno},         // turno della settimana di chi è senza squadra
+                                      note:{idReparto:testo}, dataStampa:"AAAA-MM-GG" | null }   // note e data di elaborazione (stampata nel modulo)
+    dipendenti[].l104 = { giorni:["AAAA-MM-GG"] } | null   // ha la legge 104: 3 giorni di permesso al mese (scheda "104")
+    anagrafica.stampa = { responsabile, modulo, autoNote }   // intestazione e piè di pagina del modulo MOD. 80
+  Stampa: la vista "Stampa" riproduce il modulo cartaceo (A4 verticale) con la sistemazione prevalente
+  della settimana; le colonne seguono il ruolo (capoturno, vicecapoturno, operatore Bundle Fender,
+  I/II/III operatore imballaggio). Lo stesso foglio si scarica in PDF (jsPDF da cdnjs).
+  Regole: ogni squadra (A, B, C) fa lo stesso turno per tutta la settimana e la settimana dopo ruota
+  (mattina → pomeriggio → notte). Chi è "G" (o lavora in un reparto a turno unico giornaliero, come
+  Manutenzione e Magazzino) fa il turno giornaliero e non è in squadra. Le squadre sono di reparto:
+  la squadra B del Polier non è la squadra B del Corrugar. Chi non ha squadra (jolly) può andare in
+  qualsiasi squadra: "Prepara settimana" gli dà il turno dove serve per tutta la settimana.
+  Salvataggio: dentro claude.ai usa il database condiviso dell'artifact;
+  pubblicato altrove (es. GitHub Pages) con il file firebase-config.js accanto usa Firebase (Firestore),
+  con accesso tramite account Google: le email autorizzate sono nelle regole di Firestore;
+  senza nessuno dei due salva solo nel browser (localStorage).
+  Le persone si gestiscono nelle Schede (aggiungi, rinomina, elimina, note); reparti, turni e dati in Impostazioni.
+  Esporta/Importa (Impostazioni) sposta i dati tra le due versioni in un file JSON.
+-->
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Programma settimanale personale</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#FFFFFF; --surface:#F4F6F9; --ink:#18202B; --muted:#5C6878; --line:#D9DFE7;
+  --steel:#2C4A6E; --steel-ink:#FFFFFF; --ok:#2E7D4F; --warn:#B7791F; --bad:#C2342B;
+  --moved:#F2B705; --bad-bg:#FBEDEC; --warn-bg:#FCF4E6; --ok-bg:#EAF4EE;
+  color-scheme: light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#12161C; --surface:#1B2129; --ink:#E8EDF3; --muted:#9AA6B5; --line:#2C3540;
+    --steel:#7FA6D6; --steel-ink:#0E1620; --ok:#5CB883; --warn:#E0A84A; --bad:#EF6A60;
+    --moved:#E5B21C; --bad-bg:#3A1F1E; --warn-bg:#3A2E18; --ok-bg:#1A3024;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#12161C; --surface:#1B2129; --ink:#E8EDF3; --muted:#9AA6B5; --line:#2C3540;
+  --steel:#7FA6D6; --steel-ink:#0E1620; --ok:#5CB883; --warn:#E0A84A; --bad:#EF6A60;
+  --moved:#E5B21C; --bad-bg:#3A1F1E; --warn-bg:#3A2E18; --ok-bg:#1A3024;
+  color-scheme: dark;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 "Barlow",system-ui,-apple-system,"Segoe UI",Arial,sans-serif}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--bg)}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--steel);outline-offset:2px}
+.cond{font-family:"Barlow Condensed","Arial Narrow",Arial,sans-serif}
+
+header.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);border-bottom:1px solid var(--line)}
+.bar{max-width:1400px;margin:0 auto;padding:10px 16px;display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center}
+.brand{font-family:"Barlow Condensed",sans-serif;font-weight:700;font-size:22px;letter-spacing:.01em;margin-right:auto}
+.brand small{display:block;font-weight:500;font-size:13px;color:var(--muted);letter-spacing:0}
+.datenav{display:flex;align-items:center;gap:6px}
+.datenav input{border:1px solid var(--line);background:var(--bg);border-radius:6px;padding:6px 8px}
+.btn{border:1px solid var(--line);background:var(--bg);border-radius:6px;padding:6px 12px;font-weight:600}
+.btn:hover{background:var(--surface)}
+.btn.primary{background:var(--steel);color:var(--steel-ink);border-color:var(--steel)}
+.btn.small{padding:3px 9px;font-size:13px}
+.btn.danger{color:var(--bad)}
+.btn[disabled]{opacity:.5;cursor:not-allowed}
+.tabs{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.tabs a{padding:6px 14px;text-decoration:none;color:var(--ink);font-weight:600}
+.tabs a.on{background:var(--steel);color:var(--steel-ink)}
+.sync{font-size:12px;color:var(--muted);width:100%;text-align:right;margin-top:-6px}
+
+main{max-width:1400px;margin:0 auto;padding:14px 16px 40px}
+.dayhead{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 22px;margin-bottom:12px}
+.dayhead h1{font-family:"Barlow Condensed",sans-serif;font-weight:700;font-size:32px;margin:0;line-height:1.1}
+.stats{display:flex;flex-wrap:wrap;gap:6px 18px;color:var(--muted)}
+.stats b{color:var(--ink);font-size:17px}
+.tools{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
+
+.alert{border:1px solid var(--bad);background:var(--bad-bg);border-radius:8px;padding:12px 14px;margin-bottom:14px}
+.alert.okay{border-color:var(--ok);background:var(--ok-bg);padding:8px 14px}
+.alert.info{border-color:var(--warn);background:var(--warn-bg);padding:8px 14px}
+.alert.info a{color:inherit;font-weight:700}
+.alert h2{margin:0 0 8px;font-size:17px}
+.urg{border-top:1px solid color-mix(in srgb,var(--bad) 30%,transparent);padding:8px 0}
+.urg:first-of-type{border-top:0}
+.urg .t{font-weight:700}
+.urg .t span{font-weight:500;color:var(--muted)}
+.cands{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.cand{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--bg);border-radius:6px;padding:4px 4px 4px 10px}
+.cand .from{color:var(--muted);font-size:13px}
+.cand.nocomp{border-style:dashed}
+.none{color:var(--muted);font-size:14px}
+
+.board{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.rep{border:1px solid var(--line);border-radius:8px;background:var(--bg);display:flex;flex-direction:column;min-height:180px}
+.rep.drop{outline:2px dashed var(--steel);outline-offset:-2px}
+.rep .h{padding:10px 12px 8px;border-bottom:1px solid var(--line)}
+.rep .name{font-family:"Barlow Condensed",sans-serif;font-size:21px;font-weight:700;line-height:1.1}
+.rep .name small{font-size:13px;font-weight:500;color:var(--muted);margin-left:4px}
+.rep .num{display:flex;align-items:baseline;gap:8px;margin-top:2px}
+.rep .num .big{font-family:"Barlow Condensed",sans-serif;font-size:38px;font-weight:700;line-height:1}
+.rep .num .of{color:var(--muted);font-size:13px}
+.pill{font-size:12px;font-weight:700;padding:2px 8px;border-radius:999px;margin-left:auto}
+.pill.bad{background:var(--bad);color:#fff}
+.pill.warn{background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn)}
+.pill.ok{background:var(--ok-bg);color:var(--ok);border:1px solid var(--ok)}
+.gauge{position:relative;height:6px;background:var(--surface);border-radius:3px;margin-top:8px}
+.gauge i{position:absolute;inset:0 auto 0 0;border-radius:3px}
+.gauge u{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--ink)}
+.rep.bad{border-color:var(--bad)}
+.rep.bad .h{background:var(--bad-bg)}
+.chips{padding:8px;display:flex;flex-direction:column;gap:5px;flex:1}
+.chip{display:flex;flex-wrap:wrap;align-items:center;gap:2px 6px;width:100%;text-align:left;border:1px solid var(--line);background:var(--surface);border-radius:5px;padding:5px 8px;font-size:14px}
+.chip:hover{border-color:var(--steel)}
+.chip.moved{border-left:4px solid var(--moved)}
+.chip .tag{margin-left:auto;font-size:12px;color:var(--muted);text-align:right}
+.chip .warnc{color:var(--bad);font-weight:700}
+.chip[draggable=true]{cursor:grab}
+.sqb{font:700 12px/1 "Barlow Condensed",sans-serif;border:1px solid var(--muted);border-radius:3px;padding:2px 5px;background:var(--bg);color:var(--muted);min-width:18px;text-align:center}
+.absent{margin-top:16px;border:1px solid var(--line);border-radius:8px}
+.absent .h{padding:10px 12px;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:10px}
+.absent .h b{font-family:"Barlow Condensed",sans-serif;font-size:21px}
+.absent .chips{flex-direction:row;flex-wrap:wrap}
+.absent .chip{width:auto}
+.absent .chip.urgent{border-left:4px solid var(--bad)}
+.legend{font-size:13px;color:var(--muted);margin-top:10px;display:flex;flex-wrap:wrap;gap:4px 16px}
+.legend span::before{content:"";display:inline-block;width:10px;height:10px;margin-right:5px;vertical-align:-1px;border-radius:2px}
+.legend .lm::before{background:var(--moved)}
+.legend .la::before{background:var(--bad)}
+.legend .ln::before{display:none}
+
+dialog{border:1px solid var(--line);border-radius:10px;padding:0;max-width:min(520px,94vw);width:100%;background:var(--bg);color:var(--ink)}
+dialog::backdrop{background:rgba(10,15,25,.45)}
+.dlg{padding:16px 18px}
+.dlg h3{font-family:"Barlow Condensed",sans-serif;font-size:26px;margin:0}
+.dlg .sub{color:var(--muted);margin-bottom:12px}
+.dlg h4{margin:14px 0 6px;font-size:14px;color:var(--muted);font-weight:600}
+.grid-btn{display:flex;flex-wrap:wrap;gap:6px}
+.grid-btn .btn.cur{background:var(--steel);color:var(--steel-ink);border-color:var(--steel)}
+.grid-btn .btn .ab{color:var(--ok);font-weight:700}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.row label{font-size:14px;color:var(--muted)}
+.row input,.row select,.row textarea{border:1px solid var(--line);border-radius:6px;padding:6px 8px;background:var(--bg)}
+.dlg .msg{white-space:pre-line;margin:8px 0 0;line-height:1.45}
+.dlg .foot{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+
+.panel{border:1px solid var(--line);border-radius:8px;margin-bottom:18px}
+.panel > .h{padding:10px 12px;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.panel > .h b{font-family:"Barlow Condensed",sans-serif;font-size:22px;margin-right:auto}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:720px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle;font-size:14px}
+th{color:var(--muted);font-weight:600;background:var(--surface)}
+td input[type=text],td input[type=number],td select{border:1px solid var(--line);border-radius:5px;padding:4px 6px;background:var(--bg);width:100%}
+td input[type=number]{width:70px}
+td input[type=checkbox]{width:18px;height:18px;accent-color:var(--steel)}
+.comp{display:flex;flex-wrap:wrap;gap:4px}
+.comp button{border:1px solid var(--line);background:var(--bg);border-radius:4px;padding:2px 7px;font-size:12px}
+.comp button.on{background:var(--steel);color:var(--steel-ink);border-color:var(--steel)}
+.comp button.base{opacity:.65;cursor:default}
+.hint{font-size:13px;color:var(--muted);padding:8px 12px}
+.empty{padding:40px 16px;text-align:center;color:var(--muted)}
+.toast{position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:6px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:20;max-width:92vw;text-align:center}
+.toast.show{opacity:1}
+.login{max-width:440px;margin:60px auto;border:1px solid var(--line);border-radius:10px;padding:24px;text-align:center;background:var(--bg)}
+.login h1{font-family:"Barlow Condensed",sans-serif;font-size:30px;margin:0 0 6px}
+.login p{color:var(--muted);margin:0 0 18px}
+.login .err{color:var(--bad);margin-top:14px}
+.login .gbtn{display:inline-flex;align-items:center;gap:10px;font-size:16px;padding:10px 18px}
+@media (prefers-reduced-motion: reduce){.toast{transition:none}}
+
+.need{border:1px solid var(--line);border-radius:8px;margin-bottom:14px}
+.need summary{padding:10px 12px;cursor:pointer;display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+.need summary b{font-family:"Barlow Condensed",sans-serif;font-size:21px}
+.need .inner{padding:0 12px 12px}
+.need table{min-width:520px}
+.need td input[type=number]{width:64px;text-align:center}
+.need td.tot,.need th.tot{text-align:center;font-weight:700}
+.need tfoot td{background:var(--surface);font-weight:600}
+.need .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;align-items:center}
+.need .avail{font-size:12px;color:var(--muted);font-weight:400}
+.tg{border-top:1px solid var(--line);padding:6px 8px 8px}
+.tg:first-child{border-top:0}
+.tg .tl{display:flex;align-items:baseline;gap:6px;font-size:13px;font-weight:600;margin-bottom:4px;flex-wrap:wrap}
+.tg .tl .o{color:var(--muted);font-weight:400}
+.tg .tl .c{margin-left:auto;font-weight:700}
+.tg .tl .c.bad{color:var(--bad)} .tg .tl .c.ok{color:var(--ok)} .tg .tl .c.over{color:var(--warn)}
+.tg.drop{background:var(--surface);outline:2px dashed var(--steel);outline-offset:-2px}
+.tg .list{display:flex;flex-direction:column;gap:4px}
+.hole{border:1px dashed var(--bad);border-radius:5px;padding:4px 8px;font-size:13px;color:var(--bad)}
+.rep .chips{padding:0}
+.ticks{display:flex;flex-wrap:wrap;gap:4px 12px}
+.ticks label{display:flex;align-items:center;gap:5px;font-size:14px;color:var(--ink);cursor:pointer}
+.ticks input{width:17px;height:17px;accent-color:var(--steel)}
+.ticks label.dis{color:var(--muted)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px}
+.card{border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.card.off{background:var(--bad-bg);border-color:var(--bad)}
+.card .top{display:flex;align-items:baseline;gap:8px}
+.card .top b{font-family:"Barlow Condensed",sans-serif;font-size:21px;line-height:1.1}
+.card .top .btn{margin-left:auto}
+.card .lab{font-size:12px;color:var(--muted);margin-bottom:2px}
+.card .pres{display:flex;align-items:center;gap:8px;font-weight:600}
+.card .pres input{width:19px;height:19px;accent-color:var(--ok)}
+.card .warnline{font-size:13px;color:var(--bad)}
+.card .fl{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.card .fl .wide{grid-column:1/-1}
+.card select,.card input[type=text]{width:100%;border:1px solid var(--line);border-radius:5px;padding:4px 6px;background:var(--bg)}
+.l104 .cnt{margin-left:auto;font-weight:700;border-radius:999px;padding:2px 10px;font-size:13px;white-space:nowrap}
+.l104 .cnt.ok{background:var(--ok-bg);color:var(--ok)} .l104 .cnt.full{background:var(--warn-bg);color:var(--warn)} .l104 .cnt.over{background:var(--bad-bg);color:var(--bad)}
+.l104 .gg{display:flex;flex-wrap:wrap;gap:6px}
+.l104 .g{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);background:var(--surface);border-radius:5px;padding:3px 4px 3px 8px;font-size:14px}
+.l104 .g.inwk{border-color:var(--steel);background:var(--bg);font-weight:700;box-shadow:inset 0 0 0 1px var(--steel)}
+.l104 .card{min-width:0} .l104 .gg .g{white-space:nowrap}
+.l104 .g button{border:0;background:none;color:var(--muted);font-size:16px;line-height:1;padding:0 4px;cursor:pointer}
+.l104 .add{display:flex;gap:6px;align-items:center}
+.l104 .add input{flex:1;border:1px solid var(--line);border-radius:5px;padding:4px 6px;background:var(--bg)}
+.l104 .slots{display:flex;gap:4px} .l104 .slots i{width:22px;height:8px;border-radius:2px;background:var(--line)} .l104 .slots i.u{background:var(--steel)} .l104 .slots i.x{background:var(--bad)}
+.mnav{display:flex;align-items:center;gap:6px} .mnav b{min-width:140px;text-align:center;font-size:17px}
+.b104{font-size:10px;font-weight:700;border:1px solid var(--steel);color:var(--steel);border-radius:3px;padding:0 3px;line-height:1.4}
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
+.filters input,.filters select{border:1px solid var(--line);border-radius:6px;padding:6px 8px;background:var(--bg)}
+.asg{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center}
+.asg .rn{font-weight:600;font-size:14px}
+
+/* vista settimana */
+.sqbar{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px;align-items:stretch}
+.sqc{border:1px solid var(--line);border-radius:8px;padding:8px 14px;min-width:170px;background:var(--surface)}
+.sqc .l{font-family:"Barlow Condensed",sans-serif;font-size:26px;font-weight:700;line-height:1}
+.sqc .t{font-weight:600}
+.sqc .n{font-size:13px;color:var(--muted)}
+.rotbox{border:1px solid var(--line);border-radius:8px;padding:8px 12px;display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;flex:1;min-width:260px}
+.rotbox select{border:1px solid var(--line);border-radius:6px;padding:4px 6px;background:var(--bg)}
+.rotbox .mod{font-size:12px;color:var(--warn);font-weight:700}
+.wk{table-layout:fixed;min-width:940px}
+.wk th,.wk td{vertical-align:top;border-right:1px solid var(--line)}
+.wk th:last-child,.wk td:last-child{border-right:0}
+.wk thead th{text-align:center}
+.wk thead th:nth-child(-n+2){text-align:left}
+.wk .rl{font-family:"Barlow Condensed",sans-serif;font-size:19px;font-weight:700;line-height:1.15;background:var(--bg)}
+.wk .tl2{font-weight:600;font-size:13px;background:var(--bg)}
+.wk .tl2 span{display:block;color:var(--muted);font-weight:400}
+.wk td.wc{cursor:pointer}
+.wk td.wc:hover{outline:2px solid var(--steel);outline-offset:-2px}
+.wk td.wc.bad{background:var(--bad-bg)}
+.wk td.wc.over{background:var(--warn-bg)}
+.wc .cnt{font-family:"Barlow Condensed",sans-serif;font-size:17px;font-weight:700;line-height:1.1}
+.wc.bad .cnt{color:var(--bad)}
+.wc.over .cnt{color:var(--warn)}
+.wc .nm{font-size:12px;line-height:1.35}
+.wc .nm i{font-style:normal;color:var(--muted)}
+.wk tr.sep td,.wk tr.sep th{border-top:2px solid var(--muted)}
+.wk tr.sum td,.wk tr.sum th{background:var(--surface)}
+.wk.nonames .nm{display:none}
+.wk .ab{color:var(--bad)}
+.abt{min-width:760px}
+.abt td{padding:3px 6px}
+.abt select{width:100%;border:1px solid var(--line);border-radius:5px;padding:3px 4px;background:var(--bg);font-size:13px}
+.abt select.on{border-color:var(--bad);color:var(--bad);font-weight:600;background:var(--bad-bg)}
+
+/* vista stampa */
+.stampa{display:grid;grid-template-columns:minmax(250px,310px) 1fr;gap:16px;align-items:start}
+@media (max-width:860px){.stampa{grid-template-columns:1fr}}
+.stampa-side{padding:12px;display:flex;flex-direction:column;gap:10px;margin:0}
+.stampa-side .f{display:flex;flex-direction:column;gap:3px;font-size:13px;color:var(--muted)}
+.stampa-side input[type=text],.stampa-side input[type=date],.stampa-side textarea{border:1px solid var(--line);border-radius:6px;padding:5px 8px;background:var(--bg);color:var(--ink);font-size:14px}
+.stampa-side textarea{resize:vertical;min-height:36px}
+.stampa-side .ck{display:flex;gap:8px;align-items:flex-start;font-size:14px;cursor:pointer}
+.stampa-side .ck input{width:17px;height:17px;margin-top:2px;accent-color:var(--steel)}
+.stampa-side h4{margin:4px 0 0;font-size:14px}
+.stampa-side .hint{padding:0}
+.stampa-side a{color:var(--steel);font-weight:600}
+.sheets{display:flex;flex-direction:column;gap:16px;min-width:0}
+svg.sheet{width:100%;max-width:820px;height:auto;display:block;background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.28);border-radius:2px}
+@page foglio{size:A4 portrait;margin:0}
+@page{size:A4 landscape;margin:10mm}
+@media print{
+  header.top,.tools,.alert,.legend,.toast,dialog,.noprint{display:none!important}
+  :root{padding:0}
+  body::before{display:none}
+  main{padding:0}
+  .rep,.absent{break-inside:avoid;border-color:#000}
+  .chip{background:#fff;border-color:#999}
+  .chip.moved{border-left:4px solid #000}
+  .pill{border:1px solid #000;background:#fff!important;color:#000!important}
+  .board{grid-template-columns:repeat(3,1fr)}
+  .need,.filters{display:none!important}
+  .hole{border-color:#000;color:#000}
+  .wk{min-width:0;font-size:10px}
+  .wk th,.wk td{padding:3px 4px;border-color:#888}
+  .wk td.wc.bad,.wk td.wc.over{background:#fff}
+  .wc.bad .cnt,.wc.over .cnt{color:#000}
+  .wc .nm{font-size:9px}
+  .wk.nonames .nm{display:block}
+  .scroll{overflow:visible}
+  .dayhead h1{font-size:22px}
+  .stampa{display:block}
+  .stampa-side{display:none!important}
+  svg.sheet{page:foglio;width:210mm;height:297mm;max-width:none;box-shadow:none;border-radius:0;break-after:page}
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="bar">
+    <div class="brand">Programma settimanale personale<small>Dal lunedì ore 06:00 al sabato ore 06:00</small></div>
+    <div class="datenav" id="datenav">
+      <button class="btn" id="prev" aria-label="Precedente">‹</button>
+      <input type="date" id="date" aria-label="Data">
+      <button class="btn" id="next" aria-label="Successivo">›</button>
+      <button class="btn" id="today">Oggi</button>
+    </div>
+    <nav class="tabs"><a href="#settimana" id="t-w">Settimana</a><a href="#stampa" id="t-p">Stampa</a><a href="#schede" id="t-s">Schede</a><a href="#l104" id="t-l">104</a><a href="#impostazioni" id="t-a">Impostazioni</a></nav>
+    <div class="sync"><span id="sync">Caricamento…</span><span id="utente" hidden> · <span id="uemail"></span> <button class="btn small" id="esci">Esci</button></span></div>
+  </div>
+</header>
+<main id="main"><div class="empty">Caricamento…</div></main>
+
+<dialog id="dlg"><div class="dlg" id="dlgBody"></div></dialog>
+<dialog id="ask"><div class="dlg" id="askBody"></div></dialog>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+/* Dati iniziali (elenco del personale da Excel): usati al primo avvio o quando i dati salvati sono di una versione precedente. */
+window.DATI_INIZIALI = null;   // versione per GitHub: nessun dato personale nel file, i dati si caricano su Firebase con Impostazioni → Importa da un file
+</script>
+<script>
+(function(){
+"use strict";
+
+/* ---------- costanti ---------- */
+const TIPI = [
+  {id:"nonprog",   l:"Assenza non programmata", urg:true},
+  {id:"malattia",  l:"Malattia",                urg:true},
+  {id:"infortunio",l:"Infortunio",              urg:true},
+  {id:"ferie",     l:"Ferie",                   urg:false},
+  {id:"permesso",  l:"Permesso",                urg:false},
+  {id:"altro",     l:"Altro",                   urg:false}
+];
+const tipo = id => TIPI.find(t=>t.id===id) || TIPI[TIPI.length-1];
+const GIORNI = ["domenica","lunedì","martedì","mercoledì","giovedì","venerdì","sabato"];
+const MESI = ["gennaio","febbraio","marzo","aprile","maggio","giugno","luglio","agosto","settembre","ottobre","novembre","dicembre"];
+const NOTURNO = "_";                       // chiave per "squadra/turno da assegnare"
+const ORD = ["mattina","pomeriggio","notte"];   // ordine della rotazione delle squadre
+const SQUADRE = ["A","B","C"];
+const GIORN = "giornaliero";
+const TURNI_BASE = [
+  {id:"mattina",   nome:"Mattina",    orario:"06–14"},
+  {id:"pomeriggio",nome:"Pomeriggio", orario:"14–22"},
+  {id:"notte",     nome:"Notte",      orario:"22–06"},
+  {id:GIORN,       nome:"Giornaliero",orario:""}
+];
+
+/* ---------- stato ---------- */
+let ana = null;                  // anagrafica (vedi intestazione)
+let day = normDay(null);         // giornata corrente {assenze, assegnazioni, fabbisogno}
+let week = {rotazione:null, jolly:{}, note:{}, dataStampa:null, assenze:{}, assegnazioni:{}};   // settimana corrente {rotazione, jolly, note, dataStampa}
+let weekMon = "";                // lunedì della settimana a cui si riferisce "week"
+let curDate = startDate();
+let view = "settimana";
+let backend = null;
+let readOnly = false;
+let weekLoaded = false, dayLoaded = false;
+let unsubDay = null, unsubWeek = null;
+let anaDirty = false;
+let ptrDown = false;
+let downloadsCap = null;
+let schedeQ = "", schedeRep = "", schedeSq = "";
+let l104Mese = "";               // mese mostrato nella scheda 104 ("AAAA-MM"); vuoto = mese della data scelta
+let showNames = true;
+let migrated = false;
+let dateFixed = false;
+let absRep = "", absOpen = true;
+
+/* ---------- utilità ---------- */
+function isoToday(){ return iso(new Date()); }
+function iso(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function parseIso(s){ const [y,m,d]=s.split("-").map(Number); return new Date(y,m-1,d); }
+function addDays(s,n){ const d=parseIso(s); d.setDate(d.getDate()+n); return iso(d); }
+function dow(s){ return parseIso(s).getDay(); }
+function isWeekend(s){ const d=dow(s); return d===0||d===6; }
+function mondayOf(s){ const d=dow(s); return addDays(s, d===0 ? -6 : 1-d); }   // sabato e domenica appartengono alla settimana appena finita
+function workdays(mon){ return [0,1,2,3,4].map(i=>addDays(mon,i)); }
+function stepWork(s,n){ let d=addDays(s,n), g=0; while(isWeekend(d)&&g<7){ d=addDays(d,n); g++; } return d; }
+// dal giorno di preparazione (di solito venerdì) il programma si apre sulla settimana dopo
+function startDate(p){ const t=isoToday(), d=dow(t), prep=p||5; return (d===0||d===6||d>=prep) ? addDays(mondayOf(t),7) : t; }
+function fmtLong(s){ const d=parseIso(s); const g=GIORNI[d.getDay()]; return g[0].toUpperCase()+g.slice(1)+" "+d.getDate()+" "+MESI[d.getMonth()]+" "+d.getFullYear(); }
+function fmtShort(s){ const d=parseIso(s); return GIORNI[d.getDay()].slice(0,3)+" "+d.getDate()+"/"+(d.getMonth()+1); }
+function fmtDM(s){ const d=parseIso(s); return d.getDate()+" "+MESI[d.getMonth()]; }
+function esc(s){ return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function clone(o){ return JSON.parse(JSON.stringify(o)); }
+function uid(p){ return p+Math.random().toString(36).slice(2,8)+Date.now().toString(36).slice(-3); }
+const $ = id => document.getElementById(id);
+// conferma dentro la pagina (le finestre confirm() del browser sono bloccate nell'anteprima di Claude)
+function chiedi(msg,o){ o=o||{};
+  return new Promise(ok=>{ const dl=$("ask"); let done=false; const fine=v=>{ if(done) return; done=true; if(dl.open) dl.close(); ok(v); };
+    $("askBody").innerHTML=`${o.titolo?`<h3>${esc(o.titolo)}</h3>`:""}<div class="msg">${esc(msg)}</div><div class="foot"><button class="btn" id="askNo">${esc(o.no||"Annulla")}</button><button class="btn ${o.danger?"danger":"primary"}" id="askOk">${esc(o.ok||"Conferma")}</button></div>`;
+    $("askNo").onclick=()=>fine(false); $("askOk").onclick=()=>fine(true); dl.oncancel=()=>fine(false); dl.onclose=()=>fine(false);
+    dl.showModal(); $("askOk").focus(); }); }
+function toast(msg){ const t=$("toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove("show"),3600); }
+function repById(id){ return ana.reparti.find(r=>r.id===id); }
+function turnoById(id){ return ana.turni.find(t=>t.id===id); }
+function empById(id){ return ana.dipendenti.find(e=>e.id===id); }
+function repName(id){ const r=repById(id); return r? r.nome : "—"; }
+function turnoName(id){ const t=turnoById(id); return t? t.nome : "Da assegnare"; }
+function canRep(e,r){ return e.reparto===r || (e.competenze||[]).includes(r); }
+// accoppiamenti: in quel reparto la persona lavora solo se nello stesso turno c'è almeno uno di questi colleghi
+// ruoli che devono esserci in ogni turno (nell'ordine in cui si riempiono)
+const RUOLI={
+  capoturno:{l:"capoturno", m:/^capo ?turno/, bonus:60},
+  vicecapoturno:{l:"vicecapoturno", m:/^vice ?capo ?turno/, bonus:45},
+  bundle:{l:"operatore Bundle Fender", m:/bundle|fender/, bonus:40},
+  imb1:{l:"I operatore imballaggio", m:/^(i|1|primo)\b.*imbal/, bonus:40}
+};
+const RUOLI_DEF={corrugar:["capoturno","bundle","imb1"], polier:["capoturno","vicecapoturno","imb1"], kingcor:["capoturno","imb1"], reparto5:["capoturno"]};
+function haRuolo(e,k){ return !!e && !!RUOLI[k] && RUOLI[k].m.test(normStr(e.ruolo)); }
+function isCapo(e){ return haRuolo(e,"capoturno"); }
+// ruoli richiesti in un turno: quelli del reparto, finché bastano i posti (con 2 posti al Kingcor: capoturno e I operatore)
+function ruoliRichiesti(r,n){ return (r.ruoli||[]).filter(k=>RUOLI[k]).slice(0,Math.max(0,n)); }
+// può lavorare in quel turno di quel reparto anche se la sua squadra fa un altro turno (Reparto 5 di notte)
+function fuoriTurnoOk(e,r,t,mon){ return t==="notte" && !!(repById(r)||{}).notteAltreSquadre && canTurno(e,t) && ORD.includes(turnoDi(e,mon)); }
+// turni (reparto e turno) che richiedono un capoturno e non ce l'hanno
+function ruoliMancanti(st,dd,date){
+  const fab=fabEff(dd,date), out=[];
+  for(const r of ana.reparti){ if(r.giornaliero) continue;
+    for(const t of ORD){ const list=st.slots[r.id][t];
+      for(const k of ruoliRichiesti(r,fab[r.id][t])) if(!list.some(e=>haRuolo(e,k))) out.push({r, t:turnoById(t), k, list}); } }
+  return out;
+}
+function partnersOf(e,r){ return ((e.coppie||{})[r]||[]).filter(id=>empById(id)); }
+function coppiaOk(e,r,ids){ const p=partnersOf(e,r); return !p.length || p.some(id=>ids.includes(id)); }
+function nomiPartner(e,r){ return partnersOf(e,r).map(id=>empById(id).nome).join(" o "); }
+function normStr(s){ return String(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().replace(/\s+/g," ").trim(); }
+function normDay(d){
+  const out={assenze:(d&&d.assenze)||{}, assegnazioni:(d&&d.assegnazioni)||{}, fabbisogno:(d&&d.fabbisogno)||null};
+  if(d && d.spostamenti && !d.assegnazioni){ for(const [id,r] of Object.entries(d.spostamenti)) out.assegnazioni[id]={rep:r,turno:null}; }
+  return out;
+}
+function normWeek(d){ const r=d&&d.rotazione, j={}; if(d&&d.jolly) for(const [k,v] of Object.entries(d.jolly)) if(ORD.includes(v)) j[k]=v;
+  const note={}; if(d&&d.note) for(const [k,v] of Object.entries(d.note)) if(typeof v==="string"&&v.trim()) note[k]=v;
+  const ds=d&&typeof d.dataStampa==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(d.dataStampa) ? d.dataStampa : null;
+  let fb=null; if(d&&d.fabbisogno&&typeof d.fabbisogno==="object"){ fb={}; for(const [r,m] of Object.entries(d.fabbisogno)) if(m&&typeof m==="object"){ fb[r]={}; for(const [t,v] of Object.entries(m)) fb[r][t]=Math.max(0,parseInt(v,10)||0); } }
+  const tr={}; if(d&&d.turniRep) for(const [k,v] of Object.entries(d.turniRep)) if([1,2,3].includes(v)) tr[k]=v;
+  const ok=o=>o&&typeof o==="object"&&!Array.isArray(o)? o : {};
+  return {rotazione: r && ORD.includes(r.A)&&ORD.includes(r.B)&&ORD.includes(r.C) ? {A:r.A,B:r.B,C:r.C} : null, jolly:j, note, dataStampa:ds, turniRep:tr, fabbisogno:fb,
+          assenze:ok(d&&d.assenze), assegnazioni:ok(d&&d.assegnazioni), jollyMan:ok(d&&d.jollyMan)}; }
+function normAna(d){
+  const a={versione:4, prepDow:[4,5,6].includes(d&&d.prepDow)?d.prepDow:5, reparti:(d&&d.reparti)||[], turni:(d&&d.turni)||[], dipendenti:(d&&d.dipendenti)||[],
+           rotazione:Object.assign({rif:"2026-11-16",A:"notte",passo:2}, (d&&d.rotazione)||{})};
+  a.stampa=Object.assign({responsabile:"A. Spaccini", modulo:"MOD. 80 - REV.04", autoNote:true}, (d&&d.stampa)||{});
+  a.reparti.forEach(r=>{ r.std=r.std||{}; r.giornaliero=!!r.giornaliero; r.turniVariabili=!!r.turniVariabili;
+    if(!Array.isArray(r.ruoli)) r.ruoli = RUOLI_DEF[r.id] ? RUOLI_DEF[r.id].slice() : (r.capoObbl ? ["capoturno"] : []);
+    r.ruoli=r.ruoli.filter(k=>RUOLI[k]); delete r.capoObbl;
+    if(r.minTurno==null) r.minTurno = r.id==="reparto5" ? 2 : 0;
+    if(typeof r.notteAltreSquadre!=="boolean") r.notteAltreSquadre = r.id==="reparto5"; });
+  TURNI_BASE.forEach(t=>{ if(!a.turni.find(x=>x.id===t.id)) a.turni.push(clone(t)); });
+  a.turni.sort((x,y)=>TURNI_BASE.findIndex(t=>t.id===x.id)-TURNI_BASE.findIndex(t=>t.id===y.id));
+  const ids=new Set(a.dipendenti.map(e=>e.id)), reps=new Set(a.reparti.map(r=>r.id));
+  const isoOk=v=>typeof v==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(v);
+  a.dipendenti.forEach(e=>{ const g=e.l104&&Array.isArray(e.l104.giorni)? [...new Set(e.l104.giorni.filter(isoOk))].sort() : null; e.l104 = (e.l104===true||g) ? {giorni:g||[]} : null; });
+  a.dipendenti.forEach(e=>{ e.malattia = e.malattia&&isoOk(e.malattia.fino) ? {dal:isoOk(e.malattia.dal)?e.malattia.dal:"", fino:e.malattia.fino} : null; });
+  a.dipendenti.forEach(e=>{ const c={}; if(e.coppie&&typeof e.coppie==="object") for(const [r,l] of Object.entries(e.coppie)) if(reps.has(r)&&Array.isArray(l)){ const v=[...new Set(l)].filter(x=>x!==e.id&&ids.has(x)); if(v.length) c[r]=v; } e.coppie=c; });
+  a.dipendenti.forEach(e=>{ e.competenze=e.competenze||[]; e.squadra=e.squadra||""; e.ruolo=e.ruolo||""; e.note=e.note||""; e.reparto=e.reparto||""; e.sqPref=SQUADRE.includes(e.sqPref)?e.sqPref:""; e.noTurni=Array.isArray(e.noTurni)? e.noTurni.filter(t=>ORD.includes(t)) : []; if(e.noTurni.length>=ORD.length) e.noTurni=[]; delete e.turni; });
+  return a;
+}
+
+/* ---------- squadre e rotazione ---------- */
+// Squadra effettiva: nei reparti a turno unico giornaliero sono tutti "G"
+function sqEff(e){ const r=repById(e.reparto); return r&&r.giornaliero ? "G" : (e.squadra||""); }
+function rotBase(){ const r=ana.rotazione||{}; return {rif:r.rif||"2026-11-16", A:ORD.includes(r.A)?r.A:"notte", passo:r.passo===1?1:2}; }
+function rotFor(mon){
+  if(mon===weekMon && week.rotazione) return week.rotazione;
+  const b=rotBase(); const weeks=Math.round((parseIso(mon)-parseIso(b.rif))/(7*864e5));
+  const iA=(((ORD.indexOf(b.A)+b.passo*weeks)%3)+3)%3;
+  return {A:ORD[iA], B:ORD[(iA+1)%3], C:ORD[(iA+2)%3]};
+}
+function rotManual(mon){ return mon===weekMon && !!week.rotazione; }
+// turno che la persona fa di default in quella settimana
+// chi ha un turno escluso (es. niente notte) nella settimana in cui la sua squadra lo fa diventa come un jolly
+function turnoDi(e,mon){ const s=sqEff(e); if(s==="G") return GIORN;
+  if(SQUADRE.includes(s)){ const t=rotFor(mon)[s]; if(canTurno(e,t)) return t; }
+  if(mon===weekMon && week.jolly && week.jolly[e.id] && canTurno(e,week.jolly[e.id])) return week.jolly[e.id];   // turno scelto per la settimana
+  return null; }
+function canTurno(e,t){ return !t || t===GIORN || t===NOTURNO || !(e.noTurni||[]).includes(t); }
+// senza un turno fisso nella settimana: jolly, oppure la sua squadra fa un turno che non può fare
+function fuoriSquadra(e,mon){ if(!repById(e.reparto)) return false; if(isJolly(e)) return true; const s=sqEff(e); return SQUADRE.includes(s) && !canTurno(e,rotFor(mon)[s]); }
+function motivoFuori(e,mon){ return isJolly(e) ? "jolly senza squadra" : "la squadra "+sqEff(e)+" fa "+turnoName(rotFor(mon)[sqEff(e)]).toLowerCase()+", che non può fare"; }
+function noTurniTxt(e){ const n=(e.noTurni||[]).filter(t=>ORD.includes(t)); return n.length? "Non fa: "+n.map(t=>turnoName(t).toLowerCase()).join(", ") : ""; }
+function selTurnoSett(e,mon,attr){ return `<select ${attr}><option value="">— da decidere</option>${ORD.filter(t=>canTurno(e,t)).map(t=>`<option value="${t}" ${week.jolly[e.id]===t?"selected":""}>${esc(turnoName(t))} (con la squadra ${esc(sqOfTurno(t,mon))}${isJolly(e)&&e.sqPref===sqOfTurno(t,mon)?", preferita":""})</option>`).join("")}</select>`; }
+function sqPrefOptions(e){ return `<option value="" ${e.sqPref?"":"selected"}>Nessuna: dove serve di più</option>`+SQUADRE.map(q=>`<option value="${q}" ${e.sqPref===q?"selected":""}>Squadra ${q}</option>`).join(""); }
+function turniHtml(e,head){ if(sqEff(e)==="G") return "";
+  return head+`<div class="ticks">`+ORD.map(t=>`<label><input type="checkbox" data-tok="${t}" ${canTurno(e,t)?"checked":""}>${esc(turnoName(t))}</label>`).join("")+`</div>`; }
+function bindTurni(root,e,after){
+  root.querySelectorAll("[data-tok]").forEach(c=>c.onchange=()=>{
+    const t=c.dataset.tok, nt=(e.noTurni||[]).filter(x=>x!==t); if(!c.checked) nt.push(t);
+    if(nt.length>=ORD.length){ c.checked=true; toast("Deve poter fare almeno un turno"); return; }
+    e.noTurni=nt;
+    if(week.jolly[e.id] && !canTurno(e,week.jolly[e.id])){ delete week.jolly[e.id]; saveWeek(); }
+    saveAna(); after&&after(); }); }
+function isJolly(e){ const r=repById(e.reparto); return !!r && !r.giornaliero && !sqEff(e); }
+function sqTag(e){ return sqEff(e)||"J"; }
+function sqOfTurno(t,mon){ if(t===GIORN) return "G"; const r=rotFor(mon); return SQUADRE.find(s=>r[s]===t)||""; }
+function sqLabel(t,mon){ const s=sqOfTurno(t,mon); return s==="G" ? "turno unico" : s ? "Squadra "+s : ""; }
+function incompleti(){
+  const senzaRep=ana.dipendenti.filter(e=>!repById(e.reparto)).length;
+  const senzaSq=ana.dipendenti.filter(e=>repById(e.reparto) && !sqEff(e)).length;
+  return {senzaRep, senzaSq};
+}
+function banner(){
+  const i=incompleti(), mon=mondayOf(curDate); let h="";
+  if(i.senzaRep) h+=`<div class="alert info noprint">${i.senzaRep+(i.senzaRep===1?" persona senza reparto":" persone senza reparto")}: indica il reparto nelle <a href="#schede">Schede</a> (oppure incolla l’elenco da Excel in <a href="#impostazioni">Impostazioni</a>).</div>`;
+  const jn=ana.dipendenti.filter(e=>fuoriSquadra(e,mon)&&!turnoDi(e,mon));
+  if(jn.length) h+=`<div class="alert info noprint">${jn.length===1?"1 persona senza un turno fisso (jolly, o con la squadra in un turno che non può fare) non ha":jn.length+" persone senza un turno fisso (jolly, o con la squadra in un turno che non possono fare) non hanno"} ancora un turno nella settimana dal ${esc(fmtDM(mon))}: ${jn.slice(0,8).map(e=>esc(e.nome)).join(", ")}${jn.length>8?"…":""}. Premi <b>Prepara settimana</b> nella vista <a href="#settimana">Settimana</a> o scegli il turno dalla loro scheda.</div>`;
+  const p104=ana.dipendenti.filter(e=>giorni104Sett(e,mon).length);
+  if(p104.length) h+=`<div class="alert info noprint">Permessi 104 nella settimana dal ${esc(fmtDM(mon))}: ${p104.map(e=>`<b>${esc(e.nome)}</b> (${esc(giorni104Sett(e,mon).map(fmtShort).join(", "))})`).join(", ")}. Dettagli nella scheda <a href="#l104">104</a>.</div>`;
+  return h;
+}
+
+/* ---------- backend: db condiviso oppure locale ---------- */
+function makeLocalBackend(){
+  const mem={};
+  const read=p=>{ try{ const v=localStorage.getItem("dp:"+p); if(v) return JSON.parse(v);}catch(e){} return mem[p]||null; };
+  const write=(p,d)=>{ mem[p]=d; try{ localStorage.setItem("dp:"+p, JSON.stringify(d)); }catch(e){} };
+  const list=pfx=>{ const ids=new Set(Object.keys(mem).filter(k=>k.startsWith(pfx)).map(k=>k.slice(pfx.length)));
+      try{ for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k&&k.startsWith("dp:"+pfx)) ids.add(k.slice(3+pfx.length)); } }catch(e){}
+      return [...ids].map(id=>[id, read(pfx+id)]).filter(x=>x[1]); };
+  return { kind:"local",
+    sub(p,cb){ cb(read(p),{fromCache:false}); return ()=>{}; },
+    async get(p){ return read(p); },
+    async set(p,d){ write(p,d); },
+    async listDays(){ return list("giorni/"); },
+    async listWeeks(){ return list("settimane/"); } };
+}
+function makeDbBackend(db,kind){
+  return { kind:kind||"db",
+    sub(p,cb,err){ return db.doc(p).onSnapshot(s=>cb(s.exists? clone(s.data()) : null, s.metadata), err); },
+    async get(p){ const s=await db.doc(p).get(); return s.exists? clone(s.data()) : null; },
+    async set(p,d){ await db.doc(p).set(d); },
+    async listDays(){ const s=await db.collection("giorni").get(); return s.docs.map(d=>[d.id, clone(d.data())]); },
+    async listWeeks(){ const s=await db.collection("settimane").get(); return s.docs.map(d=>[d.id, clone(d.data())]); } };
+}
+const pend={}, busy={};
+function save(path,data){
+  if(!backend) return;
+  if(readOnly){ toast("Sola lettura: non hai i permessi per modificare."); return; }
+  pend[path]=clone(data); if(!busy[path]) flush(path);
+}
+async function flush(path){
+  busy[path]=true; setSync("Salvataggio…");
+  while(pend[path]){
+    const d=pend[path]; pend[path]=null;
+    try{ await backend.set(path,d); }
+    catch(e){
+      if(e && e.code==="permission-denied"){ readOnly=true; toast("Il tuo account non può modificare i dati."); }
+      else if(e && e.code==="invalid_argument"){ readOnly=true; toast("Sola lettura: le modifiche non vengono salvate."); }
+      else if(e && e.code==="unavailable"){ await new Promise(r=>setTimeout(r,800+Math.random()*700)); pend[path]=pend[path]||d; }
+      else if(e && e.code==="quota_exceeded"){ toast("Spazio dati esaurito: elimina giornate vecchie."); }
+      else toast("Salvataggio non riuscito.");
+    }
+  }
+  busy[path]=false;
+  setSync(backend.kind!=="local" ? "Salvato e condiviso" : "Salvato solo su questo browser");
+}
+function setSync(t){ $("sync").textContent=t; }
+const dayPath = d => "giorni/"+d;
+const weekPath = m => "settimane/"+m;
+const saveDay = () => saveWeek();   // la programmazione è settimanale: "day" è la settimana corrente
+const saveWeek = () => save(weekPath(weekMon), week);
+const saveAna = () => { save("dati/anagrafica", ana); autoRicalcolo(); };
+
+/* ---------- fabbisogno ---------- */
+// Reparti con turni decisi settimana per settimana (es. Reparto 5): 1 = mattina, 2 = mattina e pomeriggio, 3 = tutti e tre.
+const TURNI_N={1:["mattina"],2:["mattina","pomeriggio"],3:ORD};
+const TURNI_N_LAB={1:"1 turno (mattina)",2:"2 turni (mattina e pomeriggio)",3:"3 turni (mattina, pomeriggio e notte)"};
+function nTurniStd(r){ return Math.max(1, ORD.filter(t=>(parseInt(r.std[t],10)||0)>0).length); }
+function nTurniRep(r,mon){ if(!r.turniVariabili||r.giornaliero) return 3;
+  const v = mon===weekMon && week.turniRep ? week.turniRep[r.id] : null; return [1,2,3].includes(v)? v : nTurniStd(r); }
+function turnoAttivo(r,t,mon){ return !ORD.includes(t) || TURNI_N[nTurniRep(r,mon)].includes(t); }
+// con la data applica i turni scelti per la settimana; senza data restituisce i valori impostati (standard o del giorno)
+// Fabbisogno della settimana: deciso per tutta la settimana (week.fabbisogno), altrimenti lo standard del reparto.
+function fabSett(mon){
+  const src = mon===weekMon && week.fabbisogno ? week.fabbisogno : null, f={};
+  for(const r of ana.reparti){ f[r.id]={};
+    for(const t of ana.turni){ const w=src&&src[r.id]; const v = w && w[t.id]!=null ? w[t.id] : r.std[t.id]; f[r.id][t.id]=Math.max(0,parseInt(v,10)||0); } }
+  return f;
+}
+function fabEff(dd,date){
+  const f=fabSett(date? mondayOf(date) : weekMon);
+  if(date){ const mon=mondayOf(date);
+    for(const r of ana.reparti){ if(!r.turniVariabili||r.giornaliero) continue;
+      const ref=Math.max(1,...ORD.map(t=>f[r.id][t]));   // turno attivo senza un numero: come il turno più numeroso
+      for(const t of ORD){ if(!turnoAttivo(r,t,mon)) f[r.id][t]=0; else if(!f[r.id][t]) f[r.id][t]=ref; } }
+    for(const r of ana.reparti){ const m=parseInt(r.minTurno,10)||0; if(m>0&&!r.giornaliero) for(const t of ORD) if(f[r.id][t]>0&&f[r.id][t]<m) f[r.id][t]=m; } }
+  return f;
+}
+// la cella ha senso? (i reparti a turno unico hanno solo il turno giornaliero)
+const turnoApplicabile = (r,t) => r.giornaliero ? t===GIORN : true;
+
+/* ---------- calcolo presenze ---------- */
+function assignOf(e,dd,date){ return dd.assegnazioni[e.id] || {rep:e.reparto, turno:turnoDi(e,mondayOf(date))}; }
+function compute(dd,date){
+  const slots={}; ana.reparti.forEach(r=>{ slots[r.id]={}; ana.turni.forEach(t=>slots[r.id][t.id]=[]); slots[r.id][NOTURNO]=[]; });
+  const assenti=[], riserve=[], senza=[];
+  for(const e of ana.dipendenti){
+    if(dd.assenze[e.id]){ assenti.push(e); continue; }
+    const a=assignOf(e,dd,date);
+    if(a.riserva){ riserve.push(e); continue; }
+    if(!slots[a.rep]){ senza.push(e); continue; }
+    const k = a.turno && turnoById(a.turno) ? a.turno : NOTURNO;
+    slots[a.rep][k].push(e);
+  }
+  const byName=(a,b)=>a.nome.localeCompare(b.nome);
+  for(const r in slots) for(const t in slots[r]) slots[r][t].sort(byName);
+  riserve.sort(byName); assenti.sort(byName); senza.sort(byName);
+  return {slots, assenti, riserve, senza};
+}
+function shortages(st,dd,date){
+  const fab=fabEff(dd,date), mon=mondayOf(date), out=[];
+  // chi può essere spostato senza aprire un buco: disponibili, senza squadra, eccedenze
+  const pool=[];
+  st.riserve.forEach(e=>pool.push({e, from:"non utilizzati"}));
+  for(const r of ana.reparti){
+    st.slots[r.id][NOTURNO].forEach(e=>pool.push({e, from:r.nome+", da assegnare"}));
+    for(const t of ana.turni){ const list=st.slots[r.id][t.id], over=list.length-fab[r.id][t.id];
+      if(over>0 && (t.id!==GIORN || fab[r.id][t.id]>0)) list.forEach(e=>pool.push({e, from:r.nome+" "+t.nome.toLowerCase()+" (+"+over+")"})); }
+  }
+  for(const r of ana.reparti) for(const t of ana.turni){
+    const n=fab[r.id][t.id], have=st.slots[r.id][t.id].length; if(have>=n) continue;
+    const full=[], part=[];
+    for(const c of pool){
+      if(!canTurno(c.e,t.id)) continue;   // turno che non può fare: non proporlo
+      const okR=canRep(c.e,r.id), okT=turnoDi(c.e,mon)===t.id || fuoriTurnoOk(c.e,r.id,t.id,mon), okC=coppiaOk(c.e,r.id,st.slots[r.id][t.id].map(x=>x.id));
+      if(okR&&okT&&okC) full.push(c);
+      else if(okR&&okT) part.push(Object.assign({why:"lì lavora solo insieme a "+nomiPartner(c.e,r.id)},c));
+      else if(okR||okT){ const sq=sqEff(c.e), tt=turnoDi(c.e,mon);
+        part.push(Object.assign({why: okR? (sq==="G"?"turno unico giornaliero":(sq?"squadra "+sq:"jolly")+(tt?" di "+turnoName(tt).toLowerCase()+" questa settimana":" senza turno")) : "non abilitato a "+r.nome}, c)); }
+    }
+    const ord=(a,b)=>(a.e.reparto===r.id?0:1)-(b.e.reparto===r.id?0:1)||a.e.nome.localeCompare(b.e.nome);
+    full.sort(ord); part.sort(ord);
+    // ultima possibilità: chi è abilitato e lavora nello stesso turno in un altro reparto (lì si apre un buco)
+    const steal=[];
+    for(const r2 of ana.reparti){ if(r2.id===r.id) continue;
+      for(const e of st.slots[r2.id][t.id]){ if(!canRep(e,r.id)||!canTurno(e,t.id)||pool.some(c=>c.e===e)) continue;
+        const okC=coppiaOk(e,r.id,st.slots[r.id][t.id].map(x=>x.id));
+        steal.push({e, from:r2.nome+" "+t.nome.toLowerCase(), why:"lì resterebbe un posto scoperto"+(okC?"":"; inoltre qui lavora solo insieme a "+nomiPartner(e,r.id))}); } }
+    steal.sort((a,b)=>a.e.nome.localeCompare(b.e.nome));
+    out.push({r, t, n, have, manca:n-have, full:full.slice(0,8), part:part.slice(0,4), steal:steal.slice(0,3)});
+  }
+  return out;
+}
+
+/* ---------- compensazione automatica (flusso a costo minimo) ----------
+   Ogni persona resta nel turno della sua squadra: può cambiare solo reparto (se abilitata).
+   Chi non trova posto nel proprio turno resta "disponibile". */
+// fissi: {idDip:{rep,turno}|{riserva}} messi a mano, che restano dove sono e occupano il loro posto
+function creaSquadre(dd,date,fissi){
+  // ripete il calcolo togliendo i posti in cui un accoppiamento non è rispettato, finché tutti lo sono
+  fissi=fissi||{}; const forbid=new Set(); let out;
+  for(let k=0;k<40;k++){
+    out=flussoSquadre(dd,date,fissi,forbid);
+    const at={}; const put=(id,a)=>{ if(a&&!a.riserva&&a.rep&&a.turno){ const key=a.rep+"|"+a.turno; (at[key]=at[key]||[]).push(id); } };
+    for(const [id,a] of Object.entries(fissi)) put(id,a);
+    for(const [id,a] of Object.entries(out.res)) put(id,a);
+    let bad=false;
+    for(const [id,a] of Object.entries(out.res)){ if(a.riserva) continue; const e=empById(id);
+      if(!coppiaOk(e,a.rep,at[a.rep+"|"+a.turno]||[])){ forbid.add(id+"|"+a.rep+"|"+a.turno); bad=true; } }
+    if(!bad) break;
+  }
+  return out;
+}
+function flussoSquadre(dd,date,fissi,forbid){
+  const mon=mondayOf(date), fab=fabEff(dd,date), occ={}, fissiIn={};
+  for(const [id,a] of Object.entries(fissi)) if(!a.riserva && a.rep && a.turno){ const k=a.rep+"|"+a.turno; occ[k]=(occ[k]||0)+1; (fissiIn[k]=fissiIn[k]||[]).push(empById(id)); }
+  const emps=ana.dipendenti.filter(e=>!dd.assenze[e.id] && !fissi[e.id] && turnoDi(e,mon));
+  const slots=[]; for(const r of ana.reparti) for(const t of ana.turni){ const n=fab[r.id][t.id]-(occ[r.id+"|"+t.id]||0); if(n>0) slots.push({r:r.id,t:t.id,n}); }
+  // posti dei ruoli obbligatori: un nodo da 1 per ruolo che passa per il turno e vale molto, così ogni turno riceve i suoi ruoli se possibile
+  const capi=[]; slots.forEach((s,j)=>{ if(!ORD.includes(s.t)) return; const r=repById(s.r), k0=s.r+"|"+s.t;
+    for(const k of ruoliRichiesti(r,fab[s.r][s.t])) if(!(fissiIn[k0]||[]).some(e=>haRuolo(e,k))) capi.push({j,k}); });
+  const E=emps.length, K=slots.length, C=capi.length, S=0, T=E+K+C+1, N=T+1, slotN=j=>E+1+j, capoN=c=>E+K+1+c;
+  const g=Array.from({length:N},()=>[]);
+  const add=(u,v,cap,cost)=>{ g[u].push({v,cap,cost,rev:g[v].length}); g[v].push({v:u,cap:0,cost:-cost,rev:g[u].length-1}); };
+  emps.forEach((e,i)=>{
+    add(S,i+1,1,0);
+    const mine=turnoDi(e,mon), prev=assignOf(e,dd,date);
+    slots.forEach((s,j)=>{
+      if(!canRep(e,s.r)||forbid.has(e.id+"|"+s.r+"|"+s.t)) return;
+      const fuori = s.t!==mine;
+      if(fuori && !fuoriTurnoOk(e,s.r,s.t,mon)) return;
+      let cost = (e.reparto===s.r?0:4) + (fuori?30:0);            // preferisce il reparto principale; fuori turno solo se serve davvero
+      if(!(prev && prev.rep===s.r && prev.turno===s.t)) cost+=1;   // stabilità rispetto alla situazione attuale
+      add(i+1,slotN(j),1,cost);
+      capi.forEach((c,ci)=>{ if(c.j===j && haRuolo(e,c.k)) add(i+1,capoN(ci),1,cost); });
+    });
+  });
+  slots.forEach((s,j)=>add(slotN(j),T,s.n,0));
+  capi.forEach((c,k)=>add(capoN(k),slotN(c.j),1,-RUOLI[c.k].bonus));
+  let filled=0;
+  while(true){
+    const dist=Array(N).fill(Infinity), inq=Array(N).fill(false), pv=Array(N).fill(-1), pe=Array(N).fill(-1);
+    dist[S]=0; const q=[S]; inq[S]=true;
+    while(q.length){ const u=q.shift(); inq[u]=false;
+      g[u].forEach((ed,k)=>{ if(ed.cap>0 && dist[u]+ed.cost<dist[ed.v]){ dist[ed.v]=dist[u]+ed.cost; pv[ed.v]=u; pe[ed.v]=k; if(!inq[ed.v]){ inq[ed.v]=true; q.push(ed.v); } } }); }
+    if(dist[T]===Infinity) break;
+    let v=T; while(v!==S){ const u=pv[v], ed=g[u][pe[v]]; ed.cap-=1; g[v][ed.rev].cap+=1; v=u; }
+    filled++;
+  }
+  const res={};
+  emps.forEach((e,i)=>{ const ed=g[i+1].find(x=>x.v>E && x.v<T && x.cap===0);
+    const j = !ed ? -1 : ed.v<=E+K ? ed.v-E-1 : capi[ed.v-E-K-1].j;
+    res[e.id]= j>=0 ? {rep:slots[j].r, turno:slots[j].t} : {riserva:true}; });
+  const tot=slots.reduce((a,s)=>a+s.n,0);
+  return {res, filled, tot, ids:new Set(emps.map(e=>e.id))};
+}
+async function runCrea(){
+  if(isWeekend(curDate)) return;
+  if(Object.keys(day.assegnazioni).length && !(await chiedi("Gli spostamenti attuali di questa giornata verranno sostituiti.",{titolo:"Ricalcolare gli spostamenti?",ok:"Ricalcola"}))) return;
+  const mon=mondayOf(curDate);
+  const {res,filled,tot,ids}=creaSquadre(day,curDate);
+  const nuove={};
+  for(const [id,a] of Object.entries(day.assegnazioni)) if(!ids.has(id) && !day.assenze[id]) nuove[id]=a;
+  for(const e of ana.dipendenti){ const r=res[e.id]; if(!r) continue;
+    if(r.riserva){ nuove[e.id]={riserva:true}; continue; }
+    if(r.rep!==e.reparto || r.turno!==turnoDi(e,mon)) nuove[e.id]=r; }
+  day.assegnazioni=nuove; saveDay(); render();
+  toast(filled===tot ? "Fatto: tutti i "+tot+" posti coperti" : "Fatto: "+filled+" posti coperti su "+tot+". Vedi i turni scoperti.");
+}
+
+/* ---------- prepara la settimana ----------
+   1. i jolly (senza squadra) prendono per tutta la settimana il turno in cui mancano più persone
+      (nel loro reparto o in quelli in cui sono abilitati);
+   2. giorno per giorno si compensano le carenze spostando chi è abilitato, restando nel proprio turno.
+   Chi avanza resta segnalato come "addetto non utilizzato"; i turni senza abbastanza persone restano scoperti. */
+async function preparaSettimana(opt){
+  opt=opt||{}; const auto=!!opt.auto;
+  const mon=mondayOf(curDate);
+  if(!auto && !(await chiedi("I jolly e chi non può fare il turno della sua squadra vengono messi nel turno dove servono. Poi chi è abilitato viene spostato da un reparto all’altro per avere in ogni turno esattamente le persone previste, tenendo conto delle assenze.\n\nGli spostamenti fatti a mano in questa settimana verranno ricalcolati.",{titolo:"Preparare la settimana dal "+fmtDM(mon)+"?",ok:"Prepara"}))) return;
+  if(mon!==weekMon) return;
+  if(!weekLoaded){ if(!auto) toast("Sto ancora caricando la settimana, riprova tra un attimo."); else autoRicalcolo(); return; }
+  if(auto && mon<mondayOf(isoToday())) return;   // le settimane passate non si ricalcolano da sole
+  applicaMalattie();
+  // turni della settimana dei jolly: ricalcolati, tranne quelli scelti a mano (che il pulsante Prepara settimana rimette in gioco)
+  if(!auto){ week.jolly={}; week.jollyMan={}; }
+  else for(const id of Object.keys(week.jolly)) if(!(week.jollyMan||{})[id]) delete week.jolly[id];
+  week.dataStampa=isoToday();                       // data di elaborazione del programma
+  const opts=e=>ana.reparti.filter(r=>!r.giornaliero && canRep(e,r.id)).map(r=>r.id);
+  const f=fabEff(week,mon), def={};
+  for(const r of ana.reparti){ def[r.id]={}; for(const t of ORD) def[r.id][t]=f[r.id][t]; }
+  for(const e of ana.dipendenti){ if(week.assenze[e.id]) continue; const t=turnoDi(e,mon); if(!t||t===GIORN||!def[e.reparto]) continue; def[e.reparto][t]--; }
+  // ruoli obbligatori ancora scoperti per reparto e turno, contando chi ha già quel turno nel suo reparto
+  const rgap={}; for(const r of ana.reparti){ rgap[r.id]={}; for(const t of ORD){ rgap[r.id][t]={}; for(const k of ruoliRichiesti(r,f[r.id][t])) rgap[r.id][t][k]=1; } }
+  for(const e of ana.dipendenti){ if(week.assenze[e.id]) continue; const t=turnoDi(e,mon); if(!t||t===GIORN||!rgap[e.reparto]) continue; for(const k in rgap[e.reparto][t]) if(haRuolo(e,k)) rgap[e.reparto][t][k]=0; }
+  const ruoloServe=(e,t)=>opts(e).some(r=>Object.entries(rgap[r][t]).some(([k,v])=>v>0&&haRuolo(e,k)));
+  const jolly=ana.dipendenti.filter(e=>fuoriSquadra(e,mon) && !turnoDi(e,mon) && !week.assenze[e.id]).sort((a,b)=>opts(a).length-opts(b).length||a.nome.localeCompare(b.nome));
+  for(const e of jolly){
+    let best=null;
+    for(const t of ORD){
+      if(!canTurno(e,t) || !opts(e).some(r=>f[r][t]>0)) continue;   // turno che non può fare o in cui i suoi reparti non lavorano
+      const gap=Math.max(0,...opts(e).map(r=>def[r][t])), base=def[e.reparto]? def[e.reparto][t] : 0;
+      const pref = !!(isJolly(e) && e.sqPref && sqOfTurno(t,mon)===e.sqPref && gap>0);   // squadra di preferenza: se lì serve qualcuno va lì
+      const rs = gap>0 && ruoloServe(e,t);                                                // lì manca il suo ruolo
+      const better = !best || (pref!==best.pref ? pref : rs!==best.rs ? rs : (gap>best.gap || (gap===best.gap && base>best.base)));
+      if(better) best={t,gap,base,pref,rs};
+    }
+    if(!best) continue;
+    week.jolly[e.id]=best.t;
+    for(const r of opts(e)) for(const k in rgap[r][best.t]) if(rgap[r][best.t][k]>0 && haRuolo(e,k)){ rgap[r][best.t][k]=0; break; }
+    let rr=opts(e)[0]; for(const r of opts(e)) if(def[r][best.t]>def[rr][best.t] || (r===e.reparto && def[r][best.t]===def[rr][best.t])) rr=r;
+    if(rr) def[rr][best.t]--;
+  }
+  const fissi={}; if(auto) for(const [id,a] of Object.entries(week.assegnazioni)) if(a.man && empById(id) && !week.assenze[id]) fissi[id]=a;
+  const asg=Object.assign({},fissi);
+  const {res}=creaSquadre({assenze:week.assenze, assegnazioni:asg},mon,fissi);
+  for(const e of ana.dipendenti){ const r=res[e.id]; if(!r) continue;
+    if(r.riserva){ asg[e.id]={riserva:true}; continue; }
+    if(r.rep!==e.reparto || r.turno!==turnoDi(e,mon)) asg[e.id]=r; }
+  week.assegnazioni=asg; saveWeek();
+  const st=compute(week,mon), scop=shortages(st,week,mon).reduce((a,u)=>a+u.manca,0), inut=st.riserve.length, nc=ruoliMancanti(st,week,mon).length;
+  render();
+  toast((auto?"Programma ricalcolato":"Settimana preparata")+": "+(scop? scop+(scop===1?" posto scoperto":" posti scoperti"):"ogni turno ha le persone previste")+(nc? ", "+nc+(nc===1?" ruolo obbligatorio mancante":" ruoli obbligatori mancanti"):"")+(inut? ", "+inut+" addetti non utilizzati":"")+".");
+}
+// ricalcolo automatico della settimana dopo ogni modifica che cambia i numeri (fabbisogno, turni, assenze, schede)
+let autoT=null, autoBusy=false, autoAgain=false, autoFrom=null;
+function autoRicalcolo(from){
+  if(!ana || readOnly || !backend) return;
+  autoFrom=weekMon;
+  clearTimeout(autoT); autoT=setTimeout(async()=>{
+    if(autoBusy){ autoAgain=true; return; }
+    autoBusy=true; const f=autoFrom; autoFrom=null;
+    try{ await preparaSettimana({auto:true, from:f}); }catch(e){}
+    autoBusy=false; if(autoAgain){ autoAgain=false; autoRicalcolo(); }
+  }, 700);
+}
+
+/* ---------- azioni ---------- */
+function assign(empId, rep, turno){
+  const e=empById(empId); if(!e) return;
+  delete day.assenze[empId];
+  const mon=mondayOf(curDate), t=(turno&&turno!==NOTURNO)?turno:null;
+  if(rep==="__ris") day.assegnazioni[empId]={riserva:true, man:true};
+  else day.assegnazioni[empId]={rep, turno:t, man:true};   // scelta a mano: il ricalcolo automatico la lascia com'è
+  saveDay(); render(); autoRicalcolo();
+  toast(e.nome+" → "+(rep==="__ris"?"non utilizzati":repName(rep)+(t?", "+turnoName(t).toLowerCase():""))+(rep!=="__ris"&&!canTurno(e,t)?". Attenzione: non può fare questo turno":""));
+}
+// malattie con scadenza (dalla scheda): la persona è assente in ogni settimana che tocca il periodo
+function malattiaCopre(e,mon){ const m=e.malattia; return !!m && m.fino>=mon && (!m.dal || m.dal<=addDays(mon,4)); }
+function applicaMalattie(){
+  if(!ana) return false; const mon=weekMon; let ch=false;
+  for(const e of ana.dipendenti){ const cur=week.assenze[e.id];
+    if(malattiaCopre(e,mon)){ const nota="fino al "+fmtIt(e.malattia.fino);
+      if(!cur || (cur.auto && cur.nota!==nota)){ week.assenze[e.id]={tipo:"malattia", nota, auto:true}; delete week.assegnazioni[e.id]; ch=true; } }
+    else if(cur && cur.auto){ delete week.assenze[e.id]; ch=true; } }
+  for(const id of Object.keys(week.assenze)) if(week.assenze[id].auto && !empById(id)){ delete week.assenze[id]; ch=true; }
+  return ch;
+}
+function setMalattia(e,fino,dal){
+  if(fino){ e.malattia={dal: dal || (e.malattia&&e.malattia.dal) || [isoToday(), weekMon].sort()[0], fino}; }
+  else e.malattia=null;
+  saveAna(); if(applicaMalattie()) saveWeek(); render();
+}
+function setAbsent(empId, tipoId, nota){
+  const e=empById(empId); if(!e) return;
+  const rec={tipo:tipoId}; if(nota) rec.nota=nota;
+  day.assenze[empId]=rec; delete day.assegnazioni[empId];
+  saveDay(); render(); autoRicalcolo();
+  toast(e.nome+": "+tipo(tipoId).l.toLowerCase()+" per la settimana dal "+fmtDM(weekMon));
+}
+function setPresent(empId){ const e=empById(empId), a=day.assenze[empId];
+  if(a && a.auto && e && e.malattia){   // malattia con scadenza: termina prima di questa settimana
+    const fino=addDays(weekMon,-3); if(e.malattia.dal && e.malattia.dal>fino) e.malattia=null; else e.malattia.fino=fino; save("dati/anagrafica",ana); }
+  delete day.assenze[empId]; saveDay(); render(); autoRicalcolo(); }
+async function resetMoves(){
+  if(!Object.keys(day.assegnazioni).length){ toast("Non ci sono spostamenti da annullare"); return; }
+  if(!(await chiedi("Tutti tornano al reparto e al turno della loro squadra per questa settimana. Poi il programma ricalcola da solo le coperture.",{titolo:"Annullare gli spostamenti?",ok:"Annulla spostamenti",no:"Indietro"}))) return;
+  day.assegnazioni={}; saveDay(); render(); autoRicalcolo();
+}
+
+/* ---------- vista giornata ---------- */
+function rotLine(mon){
+  const r=rotFor(mon);
+  return SQUADRE.map(s=>`<span><b>${s}</b> ${esc(turnoName(r[s]).toLowerCase())}</span>`).join("");
+}
+function renderNeed(mode){
+  const sett=mode==="settimana", mon=sett? weekMon : mondayOf(curDate), fab=fabEff(null,mon), totT={}; let tot=0;
+  ana.turni.forEach(t=>totT[t.id]=0);
+  const avail={}; ana.turni.forEach(t=>avail[t.id]=ana.dipendenti.filter(e=>(sett||!day.assenze[e.id])&&turnoDi(e,mon)===t.id).length);
+  const open = sett ? renderNeed.openW!==false : renderNeed.open===true;
+  let h=`<details class="need noprint" ${open?"open":""} id="${sett?"needW":"needBox"}"><summary><b>Fabbisogno della settimana</b><span class="none">quante persone servono per reparto e turno, da lunedì a venerdì${week.fabbisogno?"":" (valori standard)"}</span></summary><div class="inner"><div class="scroll"><table><thead><tr><th>Reparto</th>`+
+    ana.turni.map(t=>`<th class="tot">${esc(t.nome)}<br><span class="avail">${esc(t.orario||"")}${t.orario?" · ":""}${esc(sqLabel(t.id,mon))}</span></th>`).join("")+`<th class="tot">Totale</th></tr></thead><tbody>`;
+  for(const r of ana.reparti){
+    let rt=0;
+    h+=`<tr><td>${esc(r.nome)}${r.giornaliero?` <span class="none">(turno unico)</span>`:""}</td>`+ana.turni.map(t=>{
+      if(!turnoApplicabile(r,t.id)) return `<td class="tot none">–</td>`;
+      if(!turnoAttivo(r,t.id,mon)) return `<td class="tot none" title="Questa settimana ${esc(r.nome)} non lavora in questo turno">–</td>`;
+      const v=fab[r.id][t.id]; rt+=v; totT[t.id]+=v;
+      return sett ? `<td class="tot"><input type="number" min="0" max="99" data-nr="${r.id}" data-nt="${t.id}" value="${v}" aria-label="${esc(r.nome)} ${esc(t.nome)}"></td>` : `<td class="tot">${v}</td>`; }).join("")+`<td class="tot">${rt}</td></tr>`;
+    tot+=rt;
+  }
+  const pres = sett ? ana.dipendenti.length : ana.dipendenti.length-Object.keys(day.assenze).filter(id=>empById(id)).length;
+  h+=`</tbody><tfoot><tr><td>${sett?"Servono / persone in quel turno":"Servono / presenti in quel turno"}</td>`+ana.turni.map(t=>`<td class="tot" style="color:${totT[t.id]>avail[t.id]?"var(--bad)":"inherit"}">${totT[t.id]} / ${avail[t.id]}</td>`).join("")+
+    `<td class="tot">${tot} / ${pres}</td></tr></tfoot></table></div>`+
+    (sett ? `<div class="acts"><button class="btn small" id="stdSave">Salva come standard</button><button class="btn small" id="stdLoad">Torna ai valori standard</button>
+      <span class="none">Vale per tutta la settimana. Dopo ogni modifica il programma ridistribuisce da solo le persone.</span></div>`
+          : `<div class="acts"><button class="btn primary" id="crea">Compensa carenze</button>
+      <span class="none">Il fabbisogno vale per tutta la settimana e si cambia nella vista <a href="#settimana">Settimana</a>. Compensa carenze sposta da un reparto all’altro solo chi è abilitato, restando nel turno della sua squadra.</span></div>`)+`</div></details>`;
+  return h;
+}
+function chipHtml(e, rep, turno, list){
+  const mon=mondayOf(curDate), moved = rep && rep!==e.reparto;
+  const noRep = rep && !canRep(e,rep), noT = turno && turno!==NOTURNO && turnoDi(e,mon)!==turno, noTT = !canTurno(e,turno);
+  const noC = rep && list && turno!==NOTURNO && !coppiaOk(e,rep,list.map(x=>x.id));
+  const warn = (noRep||noT||noTT||noC) ? ` <span class="warnc" title="${noTT?"Non può fare il turno "+esc(turnoName(turno).toLowerCase()):noRep?"Non abilitato a questo reparto":noC?"Qui lavora solo insieme a "+esc(nomiPartner(e,rep)):"Turno diverso da quello della sua squadra"}">!</span>` : "";
+  const s=sqEff(e);
+  return `<button class="chip ${moved?"moved":""}" data-emp="${e.id}" draggable="true"><span class="sqb" title="${s==="G"?"Turno unico giornaliero":s?"Squadra "+s:"Jolly: senza squadra, va in qualsiasi squadra"}">${esc(s||"J")}</span>${esc(e.nome)}${giorni104Sett(e,mon).length?` <span class="b104" title="Permesso 104: ${esc(giorni104Sett(e,mon).map(fmtShort).join(", "))}">104</span>`:""}${warn}<span class="tag">${esc(e.ruolo||"")}${moved?`${e.ruolo?" · ":""}da ${esc(repName(e.reparto))}`:""}</span></button>`;
+}
+function renderSett(){
+  const mon=mondayOf(curDate), sat=addDays(mon,5);
+  const st=compute(day,curDate), fab=fabEff(day,curDate);
+  const tot=ana.dipendenti.length, ass=st.assenti.length;
+  const mov=ana.dipendenti.filter(e=>{ const a=day.assegnazioni[e.id]; return !day.assenze[e.id] && a && !a.riserva && a.rep!==e.reparto; }).length;
+  const urg=shortages(st,day,curDate);
+  let h=`<div class="dayhead"><h1>Settimana dal ${esc(fmtDM(mon))} al ${esc(fmtDM(sat))}</h1>
+    <div class="stats"><span>da <b>lunedì ore 06:00</b> a <b>sabato ore 06:00</b></span>${mon>mondayOf(isoToday())?`<span class="pill warn" style="margin:0">settimana prossima</span>`:mon===mondayOf(isoToday())?`<span class="pill ok" style="margin:0">settimana in corso</span>`:`<span class="pill" style="margin:0">settimana passata</span>`}<span><b>${tot}</b> in organico</span><span><b>${tot-ass}</b> presenti</span><span><b>${ass}</b> assenti</span><span><b>${mov}</b> fuori reparto</span><span><b>${st.riserve.length}</b> non utilizzati</span></div>
+    <div class="tools"><button class="btn small primary" id="prep">Prepara settimana</button><button class="btn small" id="rst">Annulla spostamenti</button><button class="btn small" id="prt">Stampa programma</button></div></div>`;
+  h+=banner();
+  h+=sqBarHtml(mon);
+  h+=renderNeed("settimana");
+
+  if(urg.length){
+    h+=`<section class="alert"><h2>${urg.length===1?"1 turno scoperto":urg.length+" turni scoperti"}</h2>`;
+    for(const u of urg){
+      h+=`<div class="urg"><div class="t">${esc(u.r.nome)}, ${esc(u.t.nome.toLowerCase())} <span>mancano ${u.manca} (assegnati ${u.have} su ${u.n})</span></div>`;
+      if(u.full.length) h+=`<div class="cands">`+u.full.map(c=>`<span class="cand"><span>${esc(c.e.nome)}${c.e.ruolo?" ("+esc(c.e.ruolo)+")":""} <span class="from">da ${esc(c.from)}</span></span><button class="btn small primary" data-mv="${c.e.id}" data-to="${u.r.id}" data-tt="${u.t.id}">Sposta</button></span>`).join("")+`</div>`;
+      else h+=`<div class="none">Nessuna persona libera abilitata a questo reparto nello stesso turno.${u.part.length||u.steal.length?" Altre possibilità:":" Si può coprire abilitando altre persone a "+esc(u.r.nome)+" nelle schede."}</div>`;
+      if(u.part.length||u.steal.length) h+=`<div class="cands">`+u.part.concat(u.steal).map(c=>`<span class="cand nocomp"><span>${esc(c.e.nome)} <span class="from">da ${esc(c.from)}, ${esc(c.why)}</span></span><button class="btn small" data-mv="${c.e.id}" data-to="${u.r.id}" data-tt="${u.t.id}">Sposta</button></span>`).join("")+`</div>`;
+      h+=`</div>`;
+    }
+    h+=`</section>`;
+  } else if(ana.reparti.length){
+    h+=`<div class="alert okay noprint">Tutti i turni della settimana hanno esattamente le persone previste.</div>`;
+  }
+
+  const noruolo=ruoliMancanti(st,day,curDate);
+  if(noruolo.length){
+    h+=`<section class="alert"><h2>${noruolo.length===1?"1 ruolo obbligatorio mancante":noruolo.length+" ruoli obbligatori mancanti"}</h2><div class="none" style="margin:-4px 0 6px">Chi ha quel ruolo e si potrebbe mettere. Con “Metti” entra in quel turno per la settimana; il programma poi riequilibra i numeri da solo.</div>`;
+    for(const u of noruolo){
+      const c=[], R=RUOLI[u.k], has=e=>haRuolo(e,u.k), fab2=fab;
+      st.riserve.filter(e=>has(e)&&canRep(e,u.r.id)&&(turnoDi(e,mon)===u.t.id||fuoriTurnoOk(e,u.r.id,u.t.id,mon))).forEach(e=>c.push({e,from:"non utilizzati",why:turnoDi(e,mon)===u.t.id?"":"fuori dalla sua rotazione",ok:1}));
+      for(const r2 of ana.reparti){ if(r2.id===u.r.id) continue;
+        for(const t2 of ORD){ const l2=st.slots[r2.id][t2]; if(t2!==u.t.id && !l2.some(e=>fuoriTurnoOk(e,u.r.id,u.t.id,mon))) continue;
+          const same=l2.filter(has), serve=ruoliRichiesti(r2,fab2[r2.id][t2]).includes(u.k);
+          same.filter(e=>canRep(e,u.r.id)&&(t2===u.t.id||fuoriTurnoOk(e,u.r.id,u.t.id,mon))).forEach(e=>c.push({e,from:r2.nome+" "+turnoName(t2).toLowerCase(),
+            why:(t2===u.t.id?"":"fuori dalla sua rotazione")+(serve&&same.length<2?(t2===u.t.id?"":"; ")+"lì resterebbe senza "+R.l:""), ok:!(serve&&same.length<2)&&t2===u.t.id})); } }
+      c.sort((a,b)=>(b.ok?1:0)-(a.ok?1:0)||a.e.nome.localeCompare(b.e.nome));
+      h+=`<div class="urg"><div class="t">${esc(u.r.nome)}, ${esc(u.t.nome.toLowerCase())} <span>${esc(sqLabel(u.t.id,mon))}: manca ${esc(R.l)}</span></div>`+
+        (c.length? `<div class="cands">`+c.slice(0,5).map(k=>`<span class="cand ${k.ok?"":"nocomp"}"><span>${esc(k.e.nome)} <span class="from">da ${esc(k.from)}${k.why?", "+esc(k.why):""}</span></span><button class="btn small ${k.ok?"primary":""}" data-mv="${k.e.id}" data-to="${u.r.id}" data-tt="${u.t.id}">Metti</button></span>`).join("")+`</div>`
+                  : `<div class="none">Nessuna persona con ruolo “${esc(R.l)}” abilitata a ${esc(u.r.nome)} in questo turno. Si può scrivere il ruolo nella scheda di chi lo fa, oppure abilitare a ${esc(u.r.nome)} qualcuno che ce l’ha.</div>`)+`</div>`;
+    }
+    h+=`</section>`;
+  }
+  h+=`<div class="board">`;
+  for(const r of ana.reparti){
+    let n=0, req=0, bad=false;
+    let groups="";
+    for(const t of ana.turni){
+      const list=st.slots[r.id][t.id], nn=fab[r.id][t.id]; n+=list.length; req+=nn;
+      if(!nn && !list.length) continue;
+      const cls = list.length<nn ? "bad" : (nn>0 && list.length>nn) || (nn===0 && t.id!==GIORN) ? "over" : "ok"; if(list.length<nn) bad=true;
+      groups+=`<div class="tg" data-rep="${r.id}" data-turno="${t.id}"><div class="tl">${esc(t.nome)} <span class="o">${esc(t.orario||"")}${t.orario?" · ":""}${esc(sqLabel(t.id,mon))}</span><span class="c ${cls}">${list.length}${nn?" / "+nn:""}</span></div><div class="list">`+
+        list.map(e=>chipHtml(e,r.id,t.id,list)).join("")+
+        (list.length<nn? `<div class="hole">${nn-list.length===1?"1 posto scoperto":(nn-list.length)+" posti scoperti"}</div>`:"")+`</div></div>`;
+    }
+    const nt=st.slots[r.id][NOTURNO];
+    if(nt.length){ n+=nt.length; groups+=`<div class="tg" data-rep="${r.id}" data-turno="${NOTURNO}"><div class="tl">Squadra da assegnare<span class="c">${nt.length}</span></div><div class="list">`+nt.map(e=>chipHtml(e,r.id,NOTURNO)).join("")+`</div></div>`; }
+    if(!groups) groups=`<div class="tg" data-rep="${r.id}" data-turno="${NOTURNO}"><div class="none">Nessun fabbisogno questa settimana</div></div>`;
+    const s = bad ? "bad" : (req && n>=req ? "ok" : "warn");
+    const lab = bad ? "Scoperto" : req ? "Coperto" : "Nessuna richiesta";
+    const max=Math.max(req,n,1);
+    h+=`<section class="rep ${bad?"bad":""}"><div class="h"><div class="name">${esc(r.nome)}${r.giornaliero?"<small>turno unico</small>":""}</div>
+        <div class="num"><span class="big">${n}</span><span class="of">richiesti<br>${req}</span><span class="pill ${s}">${lab}</span></div>
+        <div class="gauge" aria-hidden="true"><i style="width:${Math.min(100,n/max*100)}%;background:${bad?"var(--bad)":"var(--ok)"}"></i><u style="left:${req/max*100}%"></u></div></div>
+      <div class="chips">${groups}</div></section>`;
+  }
+  h+=`</div>`;
+
+  if(st.senza.length){
+    h+=`<section class="absent"><div class="h"><b>Senza reparto</b><span class="none">${st.senza.length} da completare: indica il reparto nella scheda</span></div><div class="chips">`+st.senza.map(e=>`<button class="chip" data-emp="${e.id}" draggable="true">${esc(e.nome)}</button>`).join("")+`</div></section>`;
+  }
+  h+=`<section class="absent" data-drop="__ris"><div class="h"><b>Addetti non utilizzati</b><span class="none">${st.riserve.length? st.riserve.length+" presenti senza un posto nel proprio turno: trascinali dove servono":"nessuno"}</span></div><div class="chips">`+
+    st.riserve.map(e=>`<button class="chip" data-emp="${e.id}" draggable="true"><span class="sqb">${esc(sqTag(e))}</span>${esc(e.nome)}<span class="tag">${esc(repName(e.reparto))}</span></button>`).join("")+`</div></section>`;
+  h+=`<section class="absent" data-drop="__abs"><div class="h"><b>Assenti</b><span class="none">${st.assenti.length? st.assenti.length+" questa settimana" : "nessuno. Per segnare un’assenza tocca un nome o trascinalo qui"}</span></div><div class="chips">`+
+    st.assenti.map(e=>{ const a=day.assenze[e.id], t=tipo(a.tipo);
+      return `<button class="chip ${t.urg?"urgent":""}" data-emp="${e.id}"><span class="sqb">${esc(sqTag(e))}</span>${esc(e.nome)}<span class="tag">${esc(t.l)}${a.nota?": "+esc(a.nota):""} (${esc(repName(e.reparto))})</span></button>`; }).join("")+
+    `</div></section>
+    <div class="legend"><span class="lm">fuori dal reparto principale</span><span class="la">assenza non programmata</span><span class="ln">Lettera nel riquadro = squadra del suo reparto (G = turno unico giornaliero, J = jolly senza squadra). ! = reparto o turno diverso da quelli della persona, oppure manca il collega con cui deve lavorare.</span><span class="ln">Tocca un nome per aprire la scheda. Da computer puoi trascinarlo su un turno.</span></div>`;
+
+  $("main").innerHTML=h;
+  $("rst").onclick=resetMoves; $("prt").onclick=()=>{ location.hash="#stampa"; };
+  $("prep").onclick=()=>preparaSettimana();
+  bindSqBar(mon);
+  $("needW").ontoggle=ev=>{ renderNeed.openW=ev.target.open; };
+  $("stdSave").onclick=()=>{ const f=fabSett(mon); ana.reparti.forEach(r=>r.std=Object.assign({},r.std,f[r.id])); save("dati/anagrafica", ana); toast("Fabbisogno salvato come standard per le prossime settimane"); };
+  $("stdLoad").onclick=()=>{ week.fabbisogno=null; saveWeek(); render(); autoRicalcolo(); };
+  document.querySelectorAll("input[data-nr]").forEach(inp=>inp.onchange=()=>{
+    const f=fabSett(mon); f[inp.dataset.nr][inp.dataset.nt]=Math.max(0,parseInt(inp.value,10)||0); week.fabbisogno=f; saveWeek(); render(); autoRicalcolo();
+  });
+  document.querySelectorAll("[data-mv]").forEach(b=>b.onclick=()=>assign(b.dataset.mv,b.dataset.to,b.dataset.tt));
+  document.querySelectorAll(".chip[data-emp]").forEach(b=>{
+    b.onclick=()=>openEmp(b.dataset.emp);
+    b.ondragstart=ev=>{ ev.dataTransfer.setData("text/plain",b.dataset.emp); ev.dataTransfer.effectAllowed="move"; };
+  });
+  document.querySelectorAll(".tg[data-rep]").forEach(sec=>{
+    sec.ondragover=ev=>{ ev.preventDefault(); sec.classList.add("drop"); };
+    sec.ondragleave=()=>sec.classList.remove("drop");
+    sec.ondrop=ev=>{ ev.preventDefault(); sec.classList.remove("drop"); const id=ev.dataTransfer.getData("text/plain"); if(id) assign(id, sec.dataset.rep, sec.dataset.turno); };
+  });
+  document.querySelectorAll("[data-drop]").forEach(sec=>{
+    sec.ondragover=ev=>ev.preventDefault();
+    sec.ondrop=ev=>{ ev.preventDefault(); const id=ev.dataTransfer.getData("text/plain"); if(!id) return; if(sec.dataset.drop==="__abs") openEmp(id,true); else assign(id,"__ris"); };
+  });
+}
+
+/* ---------- vista settimana ---------- */
+function sqBarHtml(mon){
+  const rot=rotFor(mon);
+  let sq=`<div class="sqbar">`+SQUADRE.map(s=>{ const n=ana.dipendenti.filter(e=>sqEff(e)===s).length;
+      return `<div class="sqc"><div class="l">Squadra ${s}</div><div class="t">${esc(turnoName(rot[s]))} ${esc((turnoById(rot[s])||{}).orario||"")}</div><div class="n">${n} persone</div></div>`; }).join("")+
+    `<div class="sqc"><div class="l">Giornaliero</div><div class="t">Turno unico${(turnoById(GIORN)||{}).orario?" "+esc(turnoById(GIORN).orario):""}</div><div class="n">${ana.dipendenti.filter(e=>sqEff(e)==="G").length} persone, non in squadra</div></div>`+
+    `<div class="rotbox noprint"><label for="rotA"><b>Squadra A in questa settimana</b></label><select id="rotA">${ORD.map(t=>`<option value="${t}" ${rot.A===t?"selected":""}>${esc(turnoName(t))}</option>`).join("")}</select>
+      <span class="none">B e C seguono. Ogni settimana si passa a</span><select id="rotP"><option value="1" ${rotBase().passo===1?"selected":""}>mattina → pomeriggio → notte</option><option value="2" ${rotBase().passo===2?"selected":""}>pomeriggio → mattina → notte</option></select>
+      ${rotManual(mon)?`<span class="mod">modificata a mano per questa settimana</span><button class="btn small" id="rotReset">Ripristina</button>`:""}</div>`+
+    ana.reparti.filter(r=>r.turniVariabili&&!r.giornaliero).map(r=>`<div class="rotbox noprint"><label for="ntr-${r.id}"><b>${esc(r.nome)}</b> in questa settimana lavora su</label><select id="ntr-${r.id}" data-ntr="${r.id}">${[1,2,3].map(n=>`<option value="${n}" ${nTurniRep(r,mon)===n?"selected":""}>${TURNI_N_LAB[n]}</option>`).join("")}</select></div>`).join("")+`</div>`;
+  return sq;
+}
+function bindSqBar(mon){
+  const rot=rotFor(mon), renderWeek=render;
+  $("rotA").onchange=async ev=>{
+    const A=ev.target.value; ev.target.blur();
+    const i=ORD.indexOf(A), nuova={A:ORD[i],B:ORD[(i+1)%3],C:ORD[(i+2)%3]};
+    if(await chiedi("Da questa settimana in poi: le settimane successive proseguono la rotazione da qui.\nSolo questa settimana: dalla prossima si torna alla rotazione di prima.",{titolo:"Squadra A di "+turnoName(A).toLowerCase()+" dal "+fmtDM(mon),ok:"Da questa settimana in poi",no:"Solo questa settimana"})){
+      ana.rotazione=Object.assign({},rotBase(),{rif:mon,A}); saveAna(); week.rotazione=null; saveWeek();
+    } else { week.rotazione=nuova; saveWeek(); autoRicalcolo(); }
+    renderWeek();
+  };
+  $("rotP").onchange=ev=>{ ev.target.blur(); const rb=rotBase(); ana.rotazione=Object.assign({},rb,{rif:mon,A:rot.A,passo:parseInt(ev.target.value,10)===2?2:1}); week.rotazione=null; saveWeek(); saveAna(); renderWeek(); };
+  document.querySelectorAll("select[data-ntr]").forEach(sel=>sel.onchange=()=>{ sel.blur(); week.turniRep=Object.assign({},week.turniRep,{[sel.dataset.ntr]:parseInt(sel.value,10)}); saveWeek(); renderWeek(); autoRicalcolo(); });
+  if($("rotReset")) $("rotReset").onclick=()=>{ week.rotazione=null; saveWeek(); renderWeek(); autoRicalcolo(); };
+}
+
+/* ---------- scheda dipendente (finestra) ---------- */
+function sqOptions(e){
+  const r=repById(e.reparto), giorn=r&&r.giornaliero;
+  if(giorn) return `<option value="G" selected>G · turno unico (reparto a turno unico)</option>`;
+  const v=e.squadra||"";
+  return `<option value="" ${v===""?"selected":""}>Nessuna (jolly, va in qualsiasi squadra)</option>`+SQUADRE.map(s=>`<option value="${s}" ${v===s?"selected":""}>Squadra ${s}</option>`).join("")+`<option value="G" ${v==="G"?"selected":""}>G · turno unico giornaliero, non in squadra</option>`;
+}
+function repOptions(e){ return `<option value="" ${repById(e.reparto)?"":"selected"}>— da indicare</option>`+ana.reparti.map(r=>`<option value="${r.id}" ${r.id===e.reparto?"selected":""}>${esc(r.nome)}</option>`).join(""); }
+function ruoliList(){ const s=[...new Set(ana.dipendenti.map(e=>(e.ruolo||"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b)); return `<datalist id="ruoli">${s.map(x=>`<option value="${esc(x)}">`).join("")}</datalist>`; }
+function ticksHtml(e){
+  return `<h4>Può lavorare anche in</h4><div class="ticks">`+ana.reparti.map(r=>{ const base=r.id===e.reparto;
+      return `<label class="${base?"dis":""}"><input type="checkbox" data-crep="${r.id}" ${canRep(e,r.id)?"checked":""} ${base?"disabled":""}>${esc(r.nome)}${base?" (principale)":""}</label>`; }).join("")+`</div>`;
+}
+function coppieHtml(e){
+  const reps=ana.reparti.filter(r=>canRep(e,r.id)); if(!reps.length) return "";
+  return `<h4>Solo insieme a</h4><div class="none" style="margin-bottom:6px">Se in un reparto può lavorare solo accanto a certi colleghi, scegli qui con chi: verrà messo in quel reparto solo nel turno in cui c’è almeno uno di loro. Senza nomi lavora con chiunque.</div><div class="asg">`+
+    reps.map(r=>{ const p=partnersOf(e,r.id), cand=ana.dipendenti.filter(x=>x.id!==e.id && !p.includes(x.id) && canRep(x,r.id)).sort((a,b)=>a.nome.localeCompare(b.nome));
+      return `<span class="rn">${esc(r.nome)}</span><div class="grid-btn" style="align-items:center">`+
+        p.map(id=>`<span class="cand" style="padding:2px 4px 2px 8px">${esc(empById(id).nome)} <button class="btn small" data-cdel="${r.id}|${id}" aria-label="Togli ${esc(empById(id).nome)}">✕</button></span>`).join("")+
+        `<select data-cadd="${r.id}" style="max-width:190px"><option value="">${p.length?"+ aggiungi un altro":"con chiunque · scegli…"}</option>${cand.map(x=>`<option value="${x.id}">${esc(x.nome)}</option>`).join("")}</select></div>`; }).join("")+`</div>`;
+}
+function coppieTxt(e){ return Object.keys(e.coppie||{}).filter(r=>repById(r)&&partnersOf(e,r).length).map(r=>repName(r)+" solo con "+nomiPartner(e,r)).join("; "); }
+function bindTicks(root, e, after){
+  root.querySelectorAll("[data-crep]").forEach(c=>c.onchange=()=>{ const r=c.dataset.crep; e.competenze=e.competenze.filter(x=>x!==r); if(c.checked) e.competenze.push(r); saveAna(); after&&after(); });
+}
+function openEmp(id, focusAbs){
+  const e=empById(id); if(!e) return;
+  const mon=mondayOf(curDate), wk=false;
+  const a=day.assenze[id], cur=a? null : assignOf(e,day,curDate);
+  let h=`<input type="text" id="enome" value="${esc(e.nome)}" aria-label="Nome e cognome" style="font:700 26px/1.1 'Barlow Condensed',sans-serif;width:100%;border:1px solid transparent;border-radius:6px;padding:2px 6px;margin-left:-7px;background:transparent" onfocus="this.style.borderColor='var(--line)'" onblur="this.style.borderColor='transparent'">
+    <div class="row" style="margin:6px 0 4px"><label for="prin">${isJolly(e)?"Reparto di preferenza":"Reparto principale"}</label><select id="prin">${repOptions(e)}</select></div>
+    <div class="row" style="margin:6px 0 4px"><label for="esq">Squadra</label><select id="esq">${sqOptions(e)}</select>${isJolly(e)?`<label for="esp">Squadra di preferenza</label><select id="esp">${sqPrefOptions(e)}</select>`:""}
+      <label for="eru">Ruolo in reparto</label><input type="text" id="eru" list="ruoli" value="${esc(e.ruolo||"")}" style="flex:1;min-width:120px">${ruoliList()}</div>
+    <div class="none">${esc((()=>{ const t=turnoDi(e,mon), fs=fuoriSquadra(e,mon); return (t? "Questa settimana fa il turno "+turnoName(t).toLowerCase()+(fs? "" : sqLabel(t,mon)&&t!==GIORN?" ("+sqLabel(t,mon)+")":"")+"." : "Questa settimana non ha ancora un turno.")+(fs&&!isJolly(e)? " "+motivoFuori(e,mon).replace(/^l/,"L")+"." : ""); })())}</div>
+    ${turniHtml(e,"<h4>Turni che può fare</h4>")}
+    ${fuoriSquadra(e,mon)&&!wk?`<div class="row" style="margin:6px 0 4px"><label for="ejt">Turno della settimana dal ${esc(fmtDM(mon))}</label>${selTurnoSett(e,mon,'id="ejt"')}</div>`:""}
+    <h4>Settimana dal ${esc(fmtDM(mon))}</h4>
+    <div class="ticks"><label><input type="checkbox" id="presChk" ${a?"":"checked"}>Presente</label></div>
+    <div id="absBox" style="display:${a||focusAbs?"block":"none"};margin-top:8px">`+
+    (a ? `<div class="alert" style="margin:0">Assente: <b>${esc(tipo(a.tipo).l)}</b>${a.nota? " ("+esc(a.nota)+")":""}. Spunta “Presente” per annullare.</div>`
+       : `<div class="row" style="margin-bottom:8px"><label for="tp">Motivo</label><select id="tp">${TIPI.map(t=>`<option value="${t.id}">${esc(t.l)}</option>`).join("")}</select><label for="nt">Nota</label><input type="text" id="nt" placeholder="facoltativa, es. solo mercoledì" style="flex:1;min-width:120px"></div>
+          <div class="row" id="finoRow" style="margin-bottom:8px;display:none"><label for="fino">Malattia fino al</label><input type="date" id="fino" value="${addDays(mon,4)}" min="${mon}"><span class="none">resta assente anche nelle settimane dopo, fino a questa data</span></div>
+          <button class="btn danger" id="assente">Conferma assenza</button>`)+`</div>`+
+    ticksHtml(e)+coppieHtml(e)+
+    `<h4>Legge 104</h4><div class="ticks"><label><input type="checkbox" id="e104" ${e.l104?"checked":""}>Ha la 104 (3 giorni di permesso al mese)</label></div>${e.l104?`<div class="none">${esc(riepilogo104(e,isoToday().slice(0,7)))} <a href="#l104" id="go104">Apri la scheda 104</a></div>`:""}`;
+  if(!a && !wk){
+    h+=`<h4>Posto nella settimana</h4><div class="asg">`+ana.reparti.map(r=>`<span class="rn">${esc(r.nome)}${canRep(e,r.id)?' <span class="ab" style="color:var(--ok)">✓</span>':""}</span><div class="grid-btn">`+
+      ana.turni.filter(t=>turnoApplicabile(r,t.id)).map(t=>`<button class="btn small ${cur&&!cur.riserva&&cur.rep===r.id&&cur.turno===t.id?"cur":""}" data-to="${r.id}" data-tt="${t.id}" ${canTurno(e,t.id)?"":'title="Non può fare questo turno"'}>${esc(t.nome)}${!canTurno(e,t.id)?" ✕":turnoDi(e,mon)===t.id?"":" !"}</button>`).join("")+`</div>`).join("")+
+      `<span class="rn">Nessuna squadra</span><div class="grid-btn"><button class="btn small ${cur&&cur.riserva?"cur":""}" data-to="__ris">Non utilizzato</button></div></div>`;
+  }
+  h+=`<div class="row" style="margin-top:12px"><label for="nn">Note</label><input type="text" id="nn" value="${esc(e.note||"")}" style="flex:1"></div>
+    <div class="foot"><button class="btn danger" id="delEmp" style="margin-right:auto">Elimina dipendente</button><button class="btn" id="chiudi">Chiudi</button></div>`;
+  const body=$("dlgBody"); body.innerHTML=h;
+  const dlg=$("dlg"); if(!dlg.open) dlg.showModal();
+  $("chiudi").onclick=()=>dlg.close();
+  $("enome").onchange=ev=>{ const v=ev.target.value.trim(); if(!v){ ev.target.value=e.nome; return; } e.nome=v; saveAna(); render(); };
+  $("enome").onkeydown=ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); ev.target.blur(); } };
+  $("delEmp").onclick=async()=>{
+    if(!(await chiedi(e.nome+" viene tolto dal programma: scheda, assenze, spostamenti, giorni di 104 e accoppiamenti con i colleghi.",{titolo:"Eliminare "+e.nome+"?",ok:"Elimina",danger:true}))) return;
+    ana.dipendenti=ana.dipendenti.filter(x=>x.id!==id);
+    ana.dipendenti.forEach(x=>{ for(const r of Object.keys(x.coppie||{})){ x.coppie[r]=x.coppie[r].filter(p=>p!==id); if(!x.coppie[r].length) delete x.coppie[r]; } });
+    delete week.assenze[id]; delete week.assegnazioni[id]; delete week.jolly[id]; if(week.jollyMan) delete week.jollyMan[id];
+    if(dlg.open) dlg.close(); saveAna(); saveWeek(); render(); toast(e.nome+" eliminato"); };
+  $("prin").onchange=ev=>{ e.reparto=ev.target.value; e.competenze=e.competenze.filter(c=>c!==e.reparto); saveAna(); render(); openEmp(id); };
+  if($("ejt")) $("ejt").onchange=ev=>{ week.jollyMan=week.jollyMan||{}; if(ev.target.value){ week.jolly[id]=ev.target.value; week.jollyMan[id]=true; } else { delete week.jolly[id]; delete week.jollyMan[id]; } saveWeek(); render(); openEmp(id); autoRicalcolo(); };
+  $("esq").onchange=ev=>{ e.squadra=ev.target.value; saveAna(); render(); openEmp(id); };
+  if($("esp")) $("esp").onchange=ev=>{ e.sqPref=ev.target.value; delete week.jolly[id]; if(week.jollyMan) delete week.jollyMan[id]; saveWeek(); saveAna(); render(); openEmp(id); };
+  $("eru").onchange=ev=>{ e.ruolo=ev.target.value.trim(); saveAna(); render(); };
+  $("nn").onchange=ev=>{ e.note=ev.target.value.trim(); saveAna(); };
+  $("e104").onchange=async ev=>{ if(ev.target.checked){ e.l104={giorni:[]}; }
+    else { if(e.l104&&e.l104.giorni.length && !(await chiedi("I giorni di 104 già segnati per "+e.nome+" verranno cancellati.",{titolo:"Togliere la 104?",ok:"Togli"}))){ ev.target.checked=true; return; } e.l104=null; }
+    saveAna(); render(); openEmp(id); };
+  if($("go104")) $("go104").onclick=()=>{ dlg.close(); l104Mese=""; };
+  bindTicks(body, e, ()=>{ render(); });
+  bindTurni(body, e, ()=>{ render(); openEmp(id); });
+  body.querySelectorAll("select[data-cadd]").forEach(sel=>sel.onchange=()=>{ if(!sel.value) return; const r=sel.dataset.cadd; e.coppie=e.coppie||{}; e.coppie[r]=(e.coppie[r]||[]).concat(sel.value); saveAna(); render(); openEmp(id); });
+  body.querySelectorAll("[data-cdel]").forEach(b=>b.onclick=()=>{ const [r,pid]=b.dataset.cdel.split("|"); e.coppie[r]=(e.coppie[r]||[]).filter(x=>x!==pid); if(!e.coppie[r].length) delete e.coppie[r]; saveAna(); render(); openEmp(id); });
+  body.querySelectorAll("[data-to]").forEach(b=>b.onclick=()=>{ dlg.close(); assign(id,b.dataset.to,b.dataset.tt); });
+  $("presChk").onchange=ev=>{
+    if(ev.target.checked){ if(a){ setPresent(id); openEmp(id); } else $("absBox").style.display="none"; }
+    else { $("absBox").style.display="block"; const tp=$("tp"); if(tp) tp.focus(); }
+  };
+  if($("tp")){ const sh=()=>{ $("finoRow").style.display=$("tp").value==="malattia"?"flex":"none"; }; $("tp").onchange=sh; sh(); }
+  if(!a){ $("assente").onclick=()=>{ const t=$("tp").value, n=$("nt").value.trim(), f=$("fino").value; dlg.close();
+      if(t==="malattia" && f){ e.malattia={dal:mon, fino:f}; saveAna(); if(applicaMalattie()) saveWeek(); if(n){ week.assenze[id].nota+=" · "+n; saveWeek(); } render(); toast(e.nome+": malattia fino al "+fmtIt(f)); }
+      else setAbsent(id,t,n); }; if(focusAbs){ $("presChk").checked=false; $("tp").focus(); } }
+}
+
+/* ---------- legge 104: 3 giorni di permesso al mese ---------- */
+const MAX104 = 3;
+function giorni104(e,ym){ return e.l104 ? e.l104.giorni.filter(d=>d.slice(0,7)===ym) : []; }
+function giorni104Sett(e,mon){ const fine=addDays(mon,6); return e.l104 ? e.l104.giorni.filter(d=>d>=mon&&d<=fine) : []; }
+function riepilogo104(e,ym){ const n=giorni104(e,ym).length, [y,m]=ym.split("-").map(Number), mese=MESI[m-1];
+  return n>MAX104 ? `A ${mese} ha segnato ${n} giorni: ${n-MAX104} oltre i ${MAX104} previsti.` : n===MAX104 ? `A ${mese} ha già usato tutti i ${MAX104} giorni.` : `A ${mese} ha usato ${n} giorni su ${MAX104}: ne restano ${MAX104-n}.`; }
+function ymShift(ym,n){ let [y,m]=ym.split("-").map(Number); m+=n; while(m<1){m+=12;y--;} while(m>12){m-=12;y++;} return y+"-"+String(m).padStart(2,"0"); }
+function ymLabel(ym){ const [y,m]=ym.split("-").map(Number); return MESI[m-1][0].toUpperCase()+MESI[m-1].slice(1)+" "+y; }
+function ultimoGiorno(ym){ const [y,m]=ym.split("-").map(Number); return iso(new Date(y,m,0)); }
+async function add104(e,d){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+  if(e.l104.giorni.includes(d)){ toast(e.nome+": "+fmtShort(d)+" è già segnato"); return; }
+  const n=giorni104(e,d.slice(0,7)).length;
+  if(n>=MAX104 && !(await chiedi(e.nome+" ha già usato "+n+" giorni di 104 a "+MESI[parseIso(d).getMonth()]+". Segnare lo stesso "+fmtLong(d)+"?",{titolo:"Oltre i "+MAX104+" giorni",ok:"Segna lo stesso"}))) return;
+  e.l104.giorni.push(d); e.l104.giorni.sort(); saveAna(); render(); toast(e.nome+": 104 il "+fmtLong(d).toLowerCase());
+}
+function renderL104(){
+  const oggiYm=isoToday().slice(0,7), ym=l104Mese||oggiYm, mon=mondayOf(curDate);
+  const list=ana.dipendenti.filter(e=>e.l104).sort((a,b)=>a.nome.localeCompare(b.nome,"it",{sensitivity:"base"}));
+  const altri=ana.dipendenti.filter(e=>!e.l104).sort((a,b)=>a.nome.localeCompare(b.nome,"it",{sensitivity:"base"}));
+  const usati=list.reduce((t,e)=>t+giorni104(e,ym).length,0), oltre=list.filter(e=>giorni104(e,ym).length>MAX104).length;
+  const sett=list.filter(e=>giorni104Sett(e,mon).length);
+  const minD=ym+"-01", maxD=ultimoGiorno(ym);
+  const defD = isoToday().slice(0,7)===ym ? isoToday() : curDate.slice(0,7)===ym ? curDate : minD;
+  let h=`<div class="dayhead"><h1>Legge 104</h1><div class="stats"><span><b>${list.length}</b> ${list.length===1?"dipendente":"dipendenti"} con la 104</span><span>${MAX104} giorni di permesso al mese a testa</span><span><b>${usati}</b> giorni segnati a ${esc(MESI[Number(ym.slice(5))-1])}</span></div></div>
+    <div class="filters"><div class="mnav"><button class="btn" id="m104p" aria-label="Mese precedente">‹</button><b>${esc(ymLabel(ym))}</b><button class="btn" id="m104n" aria-label="Mese successivo">›</button>${ym!==oggiYm?`<button class="btn" id="m104o">Mese in corso</button>`:`<span class="none">mese in corso</span>`}</div>
+    <select id="add104e"><option value="">+ Aggiungi un dipendente con la 104</option>${altri.map(e=>`<option value="${e.id}">${esc(e.nome)}${repById(e.reparto)?" · "+esc(repName(e.reparto)):""}</option>`).join("")}</select></div>`;
+  if(oltre) h+=`<div class="alert noprint">${oltre===1?"1 persona ha":oltre+" persone hanno"} segnato più di ${MAX104} giorni a ${esc(MESI[Number(ym.slice(5))-1])}.</div>`;
+  if(sett.length) h+=`<div class="alert info noprint">Nella settimana dal ${esc(fmtDM(mon))}: ${sett.map(e=>`<b>${esc(e.nome)}</b> (${esc(giorni104Sett(e,mon).map(fmtShort).join(", "))})`).join(", ")}.</div>`;
+  if(!list.length){ h+=`<div class="empty">Nessun dipendente ha ancora la 104. Sceglilo dal menu qui sopra oppure spunta “Ha la 104” nella sua scheda.</div>`; }
+  else {
+    h+=`<div class="cards l104">`;
+    for(const e of list){
+      const g=giorni104(e,ym), n=g.length, cls=n>MAX104?"over":n===MAX104?"full":"ok", t=turnoDi(e,mon);
+      h+=`<article class="card" data-e="${e.id}"><div class="top"><b>${esc(e.nome)}</b><span class="cnt ${cls}">${n} / ${MAX104}</span></div>
+        <div class="none" style="margin-top:-6px">${esc(repName(e.reparto))} · ${sqEff(e)==="G"?"turno unico":sqEff(e)?"squadra "+esc(sqEff(e)):"jolly"}${e.ruolo?" · "+esc(e.ruolo):""}${t?" · questa settimana "+esc(turnoName(t).toLowerCase()):""}</div>
+        <div class="slots" title="${esc(riepilogo104(e,ym))}">${Array.from({length:Math.max(MAX104,n)},(_,i)=>`<i class="${i>=MAX104?"x":i<n?"u":""}"></i>`).join("")}</div>
+        <div class="lab" style="margin-bottom:-4px">${n? "Giorni usati" : "Nessun giorno usato a "+esc(MESI[Number(ym.slice(5))-1])+": ne restano "+MAX104}</div>
+        ${n?`<div class="gg">${g.map(d=>`<span class="g ${giorni104Sett(e,mon).includes(d)?"inwk":""}" ${giorni104Sett(e,mon).includes(d)?'title="Nella settimana che stai guardando"':""}>${esc(fmtShort(d))}<button data-del104="${e.id}|${d}" aria-label="Togli ${esc(fmtLong(d))}">×</button></span>`).join("")}</div>`:""}
+        <div class="add"><input type="date" data-d104="${e.id}" value="${defD}" min="${minD}" max="${maxD}" aria-label="Giorno di 104 per ${esc(e.nome)}"><button class="btn small" data-a104="${e.id}">Segna giorno</button></div>
+        <div style="display:flex;gap:6px"><button class="btn small" data-open="${e.id}">Apri scheda</button><button class="btn small" data-rm104="${e.id}" style="margin-left:auto">Togli la 104</button></div></article>`;
+    }
+    h+=`</div>`;
+  }
+  $("main").innerHTML=h;
+  $("m104p").onclick=()=>{ l104Mese=ymShift(ym,-1); renderL104(); };
+  $("m104n").onclick=()=>{ l104Mese=ymShift(ym,1); renderL104(); };
+  if($("m104o")) $("m104o").onclick=()=>{ l104Mese=""; renderL104(); };
+  $("add104e").onchange=ev=>{ const e=empById(ev.target.value); if(!e) return; e.l104={giorni:[]}; saveAna(); renderL104(); toast(e.nome+" aggiunto alla 104"); };
+  document.querySelectorAll("[data-a104]").forEach(b=>b.onclick=()=>{ const e=empById(b.dataset.a104), inp=document.querySelector(`[data-d104="${b.dataset.a104}"]`); add104(e,inp.value); });
+  document.querySelectorAll("[data-del104]").forEach(b=>b.onclick=()=>{ const [id,d]=b.dataset.del104.split("|"), e=empById(id); e.l104.giorni=e.l104.giorni.filter(x=>x!==d); saveAna(); render(); toast(e.nome+": tolto il "+fmtShort(d)); });
+  document.querySelectorAll("[data-rm104]").forEach(b=>b.onclick=async()=>{ const e=empById(b.dataset.rm104);
+    if(!(await chiedi(e.nome+" non comparirà più in questa scheda"+(e.l104.giorni.length?" e i giorni già segnati verranno cancellati":"")+".",{titolo:"Togliere la 104?",ok:"Togli"}))) return;
+    e.l104=null; saveAna(); render(); });
+  document.querySelectorAll("[data-open]").forEach(b=>b.onclick=()=>openEmp(b.dataset.open));
+}
+
+/* ---------- vista schede ---------- */
+function renderSchede(){
+  const q=schedeQ.toLowerCase();
+  const list=ana.dipendenti.filter(e=>(!q||e.nome.toLowerCase().includes(q)||(e.ruolo||"").toLowerCase().includes(q))
+      && (!schedeRep || (schedeRep==="__none" ? !repById(e.reparto) : e.reparto===schedeRep))
+      && (!schedeSq || (schedeSq==="__none" ? !sqEff(e) : sqEff(e)===schedeSq)))
+    .sort((a,b)=>a.nome.localeCompare(b.nome,"it",{sensitivity:"base"}));
+  let h=`<div class="dayhead"><h1>Schede dipendenti</h1><div class="stats"><span>presenze della settimana dal <b>${esc(fmtDM(mondayOf(curDate)))}</b></span></div></div>`+banner()+
+    `<div class="filters"><input type="search" id="sq" placeholder="Cerca nome o ruolo" value="${esc(schedeQ)}">
+    <select id="sr"><option value="">Tutti i reparti</option><option value="__none" ${schedeRep==="__none"?"selected":""}>Senza reparto</option>${ana.reparti.map(r=>`<option value="${r.id}" ${r.id===schedeRep?"selected":""}>${esc(r.nome)}</option>`).join("")}</select>
+    <select id="ssq"><option value="">Tutte le squadre</option>${["A","B","C","G"].map(s=>`<option value="${s}" ${s===schedeSq?"selected":""}>${s==="G"?"G · turno unico":"Squadra "+s}</option>`).join("")}<option value="__none" ${schedeSq==="__none"?"selected":""}>Jolly (senza squadra)</option></select>
+    <span class="none">${list.length} schede</span><button class="btn small primary" id="addEmp" style="margin-left:auto">Aggiungi dipendente</button></div>${ruoliList()}<div class="cards">`;
+  const mon=mondayOf(curDate);
+  for(const e of list){
+    const a=day.assenze[e.id], t=turnoDi(e,mon);
+    h+=`<article class="card ${a?"off":""}" data-e="${e.id}"><div class="top"><b>${esc(e.nome)}</b><button class="btn small" data-open="${e.id}">Apri</button></div>
+      <div class="none" style="margin-top:-6px">${t? "Questa settimana: "+esc(turnoName(t).toLowerCase())+(t!==GIORN&&!fuoriSquadra(e,mon)?" ("+esc(sqLabel(t,mon))+")":"") : (fuoriSquadra(e,mon)?"Turno della settimana da decidere":"Nessun turno fisso")}${noTurniTxt(e)? ". "+esc(noTurniTxt(e)):""}${e.note? ". "+esc(e.note):""}</div>
+      <label class="pres"><input type="checkbox" data-pres="${e.id}" ${a?"":"checked"}>${a? "Assente: "+esc(tipo(a.tipo).l)+(a.nota?" ("+esc(a.nota)+")":"") : "Presente"}</label>
+      <div class="fl"><div class="wide"><div class="lab">Malattia fino al${e.malattia&&e.malattia.dal?" (dal "+esc(fmtIt(e.malattia.dal))+")":""}</div><div style="display:flex;gap:6px;align-items:center"><input type="date" data-mal="${e.id}" value="${e.malattia?e.malattia.fino:""}" style="flex:1">${e.malattia?`<button class="btn small" data-malx="${e.id}">Togli</button>`:""}</div>${e.malattia&&e.malattia.fino<isoToday()?`<div class="none">Scaduta il ${esc(fmtIt(e.malattia.fino))}</div>`:""}</div></div>
+      <div class="fl"><div class="wide"><div class="lab">${isJolly(e)?"Reparto di preferenza":"Reparto principale"}</div><select data-rp="${e.id}">${repOptions(e)}</select></div>
+        <div><div class="lab">Squadra</div><select data-sqs="${e.id}">${sqOptions(e)}</select></div>
+        ${isJolly(e)?`<div><div class="lab">Squadra di preferenza</div><select data-sqp="${e.id}">${sqPrefOptions(e)}</select></div>`:""}
+        <div><div class="lab">Ruolo in reparto</div><input type="text" list="ruoli" data-ru="${e.id}" value="${esc(e.ruolo||"")}"></div>
+        ${fuoriSquadra(e,mon)?`<div class="wide"><div class="lab">Turno della settimana (${esc(motivoFuori(e,mon))})</div>${selTurnoSett(e,mon,`data-jt="${e.id}"`)}</div>`:""}</div>
+      ${turniHtml(e,`<div><div class="lab">Turni che può fare</div>`)}${sqEff(e)==="G"?"":"</div>"}
+      <div><div class="lab">Può lavorare anche in</div><div class="ticks">`+ana.reparti.map(r=>{ const base=r.id===e.reparto;
+        return `<label class="${base?"dis":""}"><input type="checkbox" data-crep="${r.id}" ${canRep(e,r.id)?"checked":""} ${base?"disabled":""}>${esc(r.nome)}</label>`; }).join("")+`</div></div>
+      ${coppieTxt(e)?`<div class="none">${esc(coppieTxt(e))} <a href="#" data-open2="${e.id}">cambia</a></div>`:`<div class="none"><a href="#" data-open2="${e.id}">Lavora solo insieme a qualcuno?</a></div>`}
+      ${!repById(e.reparto)?`<div class="warnline">Reparto non indicato.</div>`:fuoriSquadra(e,mon)&&!t?`<div class="warnline">Senza turno in questa settimana (${esc(motivoFuori(e,mon))}).</div>`:""}</article>`;
+  }
+  h+=`</div>`;
+  if(!list.length) h+=`<div class="empty">Nessuna scheda corrisponde alla ricerca.</div>`;
+  $("main").innerHTML=h;
+  $("sq").oninput=ev=>{ schedeQ=ev.target.value; const p=ev.target.selectionStart; renderSchede(); const n=$("sq"); n.focus(); n.setSelectionRange(p,p); };
+  $("sr").onchange=ev=>{ schedeRep=ev.target.value; renderSchede(); };
+  $("ssq").onchange=ev=>{ schedeSq=ev.target.value; renderSchede(); };
+  $("addEmp").onclick=()=>{ const e={id:uid("e"),nome:"Nuovo dipendente",reparto:"",squadra:"",ruolo:"",competenze:[],coppie:{},noTurni:[],sqPref:"",malattia:null,l104:null,note:""};
+    ana.dipendenti.push(e); schedeQ=""; schedeRep=""; schedeSq=""; saveAna(); renderSchede(); openEmp(e.id);
+    setTimeout(()=>{ const n=$("enome"); if(n){ n.focus(); n.select(); } },30); };
+  document.querySelectorAll(".card[data-e]").forEach(card=>{
+    const e=empById(card.dataset.e);
+    bindTicks(card, e, null);
+    bindTurni(card, e, ()=>renderSchede());
+  });
+  document.querySelectorAll("[data-rp]").forEach(s=>s.onchange=()=>{ const e=empById(s.dataset.rp); e.reparto=s.value; e.competenze=e.competenze.filter(c=>c!==e.reparto); saveAna(); renderSchede(); });
+  document.querySelectorAll("[data-sqp]").forEach(s=>s.onchange=()=>{ const e=empById(s.dataset.sqp); e.sqPref=s.value; delete week.jolly[e.id]; if(week.jollyMan) delete week.jollyMan[e.id]; saveWeek(); saveAna(); renderSchede(); });
+  document.querySelectorAll("[data-sqs]").forEach(s=>s.onchange=()=>{ const e=empById(s.dataset.sqs); e.squadra=s.value; saveAna(); renderSchede(); });
+  document.querySelectorAll("[data-jt]").forEach(s=>s.onchange=()=>{ const id=s.dataset.jt; week.jollyMan=week.jollyMan||{}; if(s.value){ week.jolly[id]=s.value; week.jollyMan[id]=true; } else { delete week.jolly[id]; delete week.jollyMan[id]; } saveWeek(); renderSchede(); autoRicalcolo(); });
+  document.querySelectorAll("[data-ru]").forEach(s=>s.onchange=()=>{ const e=empById(s.dataset.ru); e.ruolo=s.value.trim(); saveAna(); });
+  document.querySelectorAll("[data-open]").forEach(b=>b.onclick=()=>openEmp(b.dataset.open));
+  document.querySelectorAll("[data-open2]").forEach(b=>b.onclick=ev=>{ ev.preventDefault(); openEmp(b.dataset.open2); setTimeout(()=>{ const x=document.querySelector("#dlgBody select[data-cadd]"); if(x) x.scrollIntoView({block:"center"}); },50); });
+  document.querySelectorAll("[data-mal]").forEach(inp=>inp.onchange=()=>{ const e=empById(inp.dataset.mal); setMalattia(e, /^\d{4}-\d{2}-\d{2}$/.test(inp.value)?inp.value:null); toast(e.nome+(e.malattia?": malattia fino al "+fmtIt(e.malattia.fino):": malattia tolta")); });
+  document.querySelectorAll("[data-malx]").forEach(b=>b.onclick=()=>{ const e=empById(b.dataset.malx); setMalattia(e,null); toast(e.nome+": malattia tolta"); });
+  document.querySelectorAll("[data-pres]").forEach(c=>c.onchange=()=>{ if(c.checked) setPresent(c.dataset.pres); else { c.checked=true; openEmp(c.dataset.pres,true); } });
+}
+
+/* ---------- esporta / importa ---------- */
+async function esporta(){
+  try{
+    const giorni={}; for(const [id,d] of await backend.listDays()) giorni[id]=d;
+    const settimane={}; for(const [id,d] of await backend.listWeeks()) settimane[id]=d;
+    const text=JSON.stringify({app:"distribuzione-personale", versione:3, esportato:new Date().toISOString(), anagrafica:ana, giorni, settimane}, null, 2);
+    const name="programma-personale-"+isoToday()+".json";
+    if(downloadsCap){
+      try{ await downloadsCap.save({filename:name, data:text}); toast("File esportato"); }
+      catch(e){ toast(e&&e.code==="declined" ? "Esportazione annullata" : "Esportazione non riuscita"); }
+      return;
+    }
+    const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([text],{type:"application/json"})); a.download=name;
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+    toast("File esportato");
+  }catch(e){ toast("Esportazione non riuscita"); }
+}
+function importa(file){
+  if(!file) return;
+  const fr=new FileReader();
+  fr.onload=async()=>{
+    let d; try{ d=JSON.parse(fr.result); }catch(e){ toast("Il file non è un JSON valido"); return; }
+    if(!d || !d.anagrafica || !Array.isArray(d.anagrafica.dipendenti)){ toast("Il file non contiene un’anagrafica di questo programma"); return; }
+    const giorni=Object.entries(d.giorni||{}).filter(([k])=>/^\d{4}-\d{2}-\d{2}$/.test(k));
+    const sett=Object.entries(d.settimane||{}).filter(([k])=>/^\d{4}-\d{2}-\d{2}$/.test(k));
+    if(!(await chiedi("L’anagrafica attuale viene sostituita con quella del file ("+d.anagrafica.dipendenti.length+" dipendenti) e vengono caricate "+giorni.length+" giornate.",{titolo:"Importare i dati?",ok:"Importa",danger:true}))) return;
+    ana=normAna(d.anagrafica); saveAna();
+    for(const [k,v] of giorni) save(dayPath(k), normDay(v));
+    for(const [k,v] of sett) save(weekPath(k), normWeek(v));
+    subscribeDay(); subscribeWeekIfNeeded(true); render(); toast("Dati importati");
+  };
+  fr.readAsText(file);
+}
+// Incolla da Excel: colonne Nome, Reparto, Squadra, Ruolo (separate da tabulazione o ;)
+function importaElenco(text){
+  const lines=String(text||"").split(/\r?\n/).map(l=>l.replace(/\s+$/,"")).filter(l=>l.trim());
+  let agg=0, nuovi=0; const repKo=new Set(), sqKo=new Set();
+  const findRep=s=>{ const n=normStr(s); if(!n) return ""; let r=ana.reparti.find(x=>normStr(x.nome)===n) || ana.reparti.find(x=>normStr(x.nome).startsWith(n)) || ana.reparti.find(x=>n.startsWith(normStr(x.nome))); return r? r.id : null; };
+  const findSq=s=>{ const n=normStr(s).toUpperCase(); if(!n) return ""; const m=n.match(/^(?:SQUADRA\s*)?([ABC])$/); if(m) return m[1];
+    if(n==="G"||n.startsWith("GIORN")||n.startsWith("UNICO")||n.startsWith("TURNO UNICO")||n.startsWith("NON IN SQUADRA")) return "G"; return null; };
+  let hdrMap=null;   // colonne dei reparti "Anche in": dalla riga di intestazione se presente, altrimenti nell'ordine dei reparti
+  lines.forEach((l,i)=>{
+    const c=(l.includes("\t")? l.split("\t") : l.includes(";")? l.split(";") : l.split(",")).map(x=>x.trim());
+    if(i===0 && /^nome|^cognome|^nominativo/i.test(c[0])){
+      hdrMap={}; c.forEach((h,k)=>{ if(k>=4){ const r=findRep(h.replace(/^anche in\s*[:\-]?\s*/i,"")); if(r) hdrMap[k]=r; } });
+      if(!Object.keys(hdrMap).length) hdrMap=null;
+      return;
+    }
+    const nome=c[0]; if(!nome) return;
+    let e=ana.dipendenti.find(x=>normStr(x.nome)===normStr(nome));
+    if(!e){ e={id:uid("e"),nome,reparto:"",squadra:"",ruolo:"",competenze:[],note:""}; ana.dipendenti.push(e); nuovi++; } else agg++;
+    if(c[1]){ const r=findRep(c[1]); if(r===null) repKo.add(c[1]); else { e.reparto=r; e.competenze=e.competenze.filter(x=>x!==r); } }
+    if(c[2]){ const s=findSq(c[2]); if(s===null) sqKo.add(c[2]); else e.squadra=s; }
+    if(c[3]!==undefined && c[3]!=="") e.ruolo=c[3];
+    if(c.length>4){   // colonne "Anche in": una per reparto, segnata con X
+      const comp=[];
+      c.forEach((v,k)=>{ if(k<4 || !/^(x|si|sì|1|s|ok|v)$/i.test(v)) return;
+        const r = hdrMap ? hdrMap[k] : (ana.reparti[k-4]||{}).id; if(r && r!==e.reparto && !comp.includes(r)) comp.push(r); });
+      e.competenze=comp;
+    }
+  });
+  saveAna(); renderAna();
+  const msg=[agg+" aggiornati", nuovi+" aggiunti"]; if(repKo.size) msg.push("reparto non riconosciuto: "+[...repKo].slice(0,4).join(", ")); if(sqKo.size) msg.push("squadra non riconosciuta: "+[...sqKo].slice(0,4).join(", "));
+  toast(msg.join(" · "));
+}
+
+/* ---------- vista impostazioni (ex anagrafica): reparti, turni e dati; le persone stanno nelle Schede ---------- */
+function renderAna(){
+  let h=`<div class="dayhead"><h1>Impostazioni</h1><div class="stats"><span>reparti, turni e dati del programma · le persone si gestiscono nelle <a href="#schede">Schede</a></span></div></div>
+    <section class="panel"><div class="h"><b>Dati</b><button class="btn small" id="exp">Esporta in un file</button><label class="btn small" style="cursor:pointer">Importa da un file<input type="file" id="imp" accept=".json,application/json" hidden></label></div>
+    <div class="hint">${backend.kind==="db"?"I dati sono condivisi tra chi apre questa pagina in Claude.":backend.kind==="firebase"?"I dati sono su Firebase e condivisi tra i colleghi autorizzati.":"I dati sono salvati solo in questo browser."} Il file esportato contiene anagrafica, giornate e settimane: serve come copia di sicurezza e per passare i dati tra la versione in Claude e quella aperta altrove.</div></section>
+    <section class="panel"><div class="h"><b>Incolla elenco da Excel</b><button class="btn small primary" id="pasteGo">Applica</button></div>
+    <div class="hint">Incolla qui le colonne <b>Nome · Reparto · Squadra · Ruolo</b> e, se ci sono, le colonne <b>Anche in</b> (una per reparto, segnata con X) copiate da Excel o dal modello. Se incolli anche la riga di intestazione, i reparti vengono riconosciuti dai titoli. Le persone già presenti vengono aggiornate, quelle nuove aggiunte. Squadra: A, B, C oppure G (turno unico giornaliero, non in squadra).</div>
+    <div style="padding:0 12px 12px"><textarea id="paste" rows="4" style="width:100%;border:1px solid var(--line);border-radius:6px;padding:6px 8px;background:var(--bg)" placeholder="AYAT B.	Polier	A	Operatore"></textarea></div></section>
+    <section class="panel"><div class="h"><b>Reparti</b><button class="btn small primary" id="addRep">Aggiungi reparto</button></div>
+    <div class="scroll"><table><thead><tr><th>Nome</th><th>Turno unico giornaliero</th><th>Turni decisi ogni settimana</th><th>Ruoli in ogni turno</th><th>Minimo per turno</th><th>Notte anche da altre squadre</th>${ana.turni.map(t=>`<th>Standard ${esc(t.nome.toLowerCase())}</th>`).join("")}<th>Dipendenti</th><th></th></tr></thead><tbody>`+
+    ana.reparti.map(r=>{ const n=ana.dipendenti.filter(e=>e.reparto===r.id).length;
+      return `<tr data-r="${r.id}"><td><input type="text" data-f="nome" value="${esc(r.nome)}"></td><td><input type="checkbox" data-giorn ${r.giornaliero?"checked":""} aria-label="Turno unico giornaliero"></td><td><input type="checkbox" data-tvar ${r.turniVariabili?"checked":""} ${r.giornaliero?"disabled":""} aria-label="Turni decisi ogni settimana"></td><td style="white-space:nowrap">${Object.entries(RUOLI).map(([k,x])=>`<label style="display:block;font-size:12.5px"><input type="checkbox" data-ruo="${k}" ${r.ruoli.includes(k)?"checked":""} ${r.giornaliero?"disabled":""}> ${esc(x.l)}</label>`).join("")}</td><td><input type="number" min="0" max="9" data-mint value="${r.minTurno||0}" ${r.giornaliero?"disabled":""} aria-label="Minimo per turno"></td><td><input type="checkbox" data-notte ${r.notteAltreSquadre?"checked":""} ${r.giornaliero?"disabled":""} aria-label="Notte anche da altre squadre"></td>`+
+        ana.turni.map(t=>`<td><input type="number" min="0" data-std="${t.id}" value="${r.std[t.id]||0}" ${turnoApplicabile(r,t.id)?"":"disabled"}></td>`).join("")+
+        `<td>${n}</td><td><button class="btn small danger" data-delrep="${r.id}" ${n?"disabled title='Cambia prima il reparto principale dei dipendenti'":""}>Elimina</button></td></tr>`;}).join("")+
+    `</tbody></table></div><div class="hint">Lo standard è il numero di persone che servono normalmente in ogni turno: viene proposto ogni settimana nel fabbisogno e puoi cambiarlo settimana per settimana nella vista Settimana. Nei reparti a turno unico giornaliero (Manutenzione, Magazzino) contano solo i giornalieri e tutte le persone del reparto sono fuori squadra. Nei reparti con i <b>turni decisi ogni settimana</b> (Reparto 5, Granulazione) si sceglie nella vista Settimana se lavorano su 1 turno (mattina), 2 (mattina e pomeriggio) o 3: gli altri reparti lavorano sempre su tutti e tre. Se un turno scelto ha standard 0, servono quante persone del turno più numeroso. <b>Ruoli in ogni turno</b>: il programma mette in ogni turno una persona per ciascun ruolo spuntato, nell’ordine dell’elenco e finché bastano i posti (con 2 posti al Kingcor: capoturno e I operatore imballaggio), e segnala dove non ci riesce. Il ruolo si legge da “Ruolo in reparto” della scheda. <b>Minimo per turno</b>: in ogni turno in cui il reparto lavora servono almeno tante persone. <b>Notte anche da altre squadre</b>: se di notte manca qualcuno (per esempio il capoturno, che non fa la notte) il programma può prendere una persona abilitata di un’altra squadra, anche fuori dalla rotazione.</div></section>`;
+
+  h+=`<section class="panel"><div class="h"><b>Turni</b></div>
+    <div class="scroll"><table style="min-width:420px"><thead><tr><th>Turno</th><th>Orario</th></tr></thead><tbody>`+
+    ana.turni.map(t=>`<tr data-t="${t.id}"><td>${esc(t.nome)}</td><td><input type="text" data-f="orario" value="${esc(t.orario||"")}" placeholder="es. 08–17"></td></tr>`).join("")+
+    `</tbody></table></div><div class="hint">Le squadre A, B e C fanno mattina, pomeriggio e notte e ruotano ogni settimana (si imposta nella scheda Settimana). Il turno giornaliero è quello di chi non è in squadra.</div>
+    <div class="hint">Il programma della settimana dopo si prepara il <select id="prepDow" style="border:1px solid var(--line);border-radius:5px;padding:2px 6px;background:var(--bg)">${[[4,"giovedì"],[5,"venerdì"],[6,"sabato"]].map(([v,l])=>`<option value="${v}" ${ana.prepDow===v?"selected":""}>${l}</option>`).join("")}</select>: da quel giorno il programma si apre già sulla settimana successiva.</div></section>`;
+
+  $("main").innerHTML=h;
+
+  $("exp").onclick=esporta;
+  $("prepDow").onchange=ev=>{ ana.prepDow=parseInt(ev.target.value,10)||5; saveAna(); toast("Giorno di preparazione salvato"); };
+  $("imp").onchange=ev=>{ importa(ev.target.files[0]); ev.target.value=""; };
+  $("pasteGo").onclick=()=>{ const v=$("paste").value; if(!v.trim()){ toast("Incolla prima l’elenco"); return; } importaElenco(v); };
+  $("addRep").onclick=()=>{ ana.reparti.push({id:uid("r"),nome:"Nuovo reparto",giornaliero:false,std:{}}); saveAna(); renderAna(); };
+  document.querySelectorAll("tr[data-r] [data-f]").forEach(inp=>inp.onchange=()=>{ const r=repById(inp.closest("tr").dataset.r); r.nome=inp.value.trim()||r.nome; saveAna(); renderAna(); });
+  document.querySelectorAll("tr[data-r] [data-giorn]").forEach(c=>c.onchange=()=>{
+    const r=repById(c.closest("tr").dataset.r); r.giornaliero=c.checked;
+    if(c.checked){ const s=(r.std.mattina||0)+(r.std.pomeriggio||0)+(r.std.notte||0); if(!r.std[GIORN]) r.std[GIORN]=s; ORD.forEach(t=>r.std[t]=0); }
+    saveAna(); renderAna(); });
+  document.querySelectorAll("tr[data-r] [data-ruo]").forEach(c=>c.onchange=()=>{ const r=repById(c.closest("tr").dataset.r), k=c.dataset.ruo;
+    r.ruoli=Object.keys(RUOLI).filter(x=>x===k? c.checked : r.ruoli.includes(x)); saveAna(); renderAna(); });
+  document.querySelectorAll("tr[data-r] [data-mint]").forEach(c=>c.onchange=()=>{ const r=repById(c.closest("tr").dataset.r); r.minTurno=Math.max(0,parseInt(c.value,10)||0); saveAna(); });
+  document.querySelectorAll("tr[data-r] [data-notte]").forEach(c=>c.onchange=()=>{ const r=repById(c.closest("tr").dataset.r); r.notteAltreSquadre=c.checked; saveAna(); });
+  document.querySelectorAll("tr[data-r] [data-tvar]").forEach(c=>c.onchange=()=>{ const r=repById(c.closest("tr").dataset.r); r.turniVariabili=c.checked; saveAna(); renderAna(); });
+  document.querySelectorAll("tr[data-r] [data-std]").forEach(inp=>inp.onchange=()=>{ const r=repById(inp.closest("tr").dataset.r); r.std[inp.dataset.std]=Math.max(0,parseInt(inp.value,10)||0); saveAna(); });
+  document.querySelectorAll("tr[data-t] [data-f]").forEach(inp=>inp.onchange=()=>{ const t=turnoById(inp.closest("tr").dataset.t); t.orario=inp.value.trim(); saveAna(); });
+  document.querySelectorAll("[data-delrep]").forEach(b=>b.onclick=async()=>{
+    const r=repById(b.dataset.delrep); if(!(await chiedi("Il reparto viene tolto anche dalle abilitazioni dei dipendenti.",{titolo:"Eliminare "+r.nome+"?",ok:"Elimina",danger:true}))) return;
+    ana.reparti=ana.reparti.filter(x=>x.id!==r.id); ana.dipendenti.forEach(e=>e.competenze=e.competenze.filter(c=>c!==r.id)); saveAna(); renderAna();
+  });
+}
+
+/* ---------- stampa: modulo "PROGRAMMA PERSONALE" (MOD. 80) ----------
+   Il foglio è una lista di caselle in millimetri (A4 verticale), disegnata due volte con le stesse
+   regole: in SVG per l'anteprima e la stampa dal browser, con jsPDF per il file PDF.
+   Per ogni persona vale la sistemazione prevalente della settimana; assenze e cambi di
+   singole giornate finiscono nelle note del reparto. */
+const LOGO="data:image/jpeg;base64,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";
+const PX=[10,33.2,65.5,97.8,130.1,167.7,200];   // colonne del modulo (mm)
+const MM=0.35278;                               // 1 pt in mm
+const FS_LAB=9, FS_NAME=8, FS_TIT=12;   // dimensioni dei caratteri (pt); se un testo non entra nella casella si riduce da solo
+const CAPO={l:"capoturno e\n*PREPOSTO*", m:/^capo/};
+const VICE={l:"vicecapoturno", m:/vice/, auto:1};
+const BUND={l:"operatore Bundle\nFender", m:/bundle|fender/, auto:1};
+const IMB1={l:"I operatore\nimballaggio", m:/^(i|1|primo)\b.*imbal/, auto:1};
+const IMB2={l:"II operatore imballaggio", m:/^(ii|2|secondo)\b.*imbal/, auto:1};
+const IMB3={l:"III operatore\nimballaggio", m:/^(iii|3|terzo)\b.*imbal/, auto:1};
+const LAY={
+  corrugar:    {titolo:"REPARTO 1 - CORRUGAR", fill:"#FFE699", cols:[CAPO,BUND,IMB1,IMB2,IMB3], attr:1},
+  polier:      {titolo:"REPARTO 2 - POLIER", fill:"#BDD7EE", cols:[CAPO,VICE,IMB1,IMB2,IMB3], attr:1},
+  kingcor:     {titolo:"REPARTO 3 - KINGCOR", fill:"#C6E0B4", cols:[CAPO,IMB1,IMB2]},
+  granulazione:{titolo:"REPARTO 4 - GRANULAZIONE e macinatura", fill:"#F8CBAD", cols:[{auto:1}], noResp:1, giornRow:"mattina"},
+  reparto5:    {titolo:"REPARTO 5 - LAVORAZIONI SPECIALI", fill:"#ACB9CA", cols:[{m:/^capo ?turno/, auto:1},{auto:1}], giornSlot:1},   // capoturno nella prima colonna
+  magazzino:   {titolo:"MAGAZZINO", fill:"#D0CECE", grid:1},
+  manutenzione:{titolo:"MANUTENZIONE", fill:"#FFC000", grid:1, noResp:1}
+};
+function isoWeek(s){ const d=parseIso(s); d.setDate(d.getDate()+3-((d.getDay()+6)%7)); const w1=new Date(d.getFullYear(),0,4);
+  return 1+Math.round(((d-w1)/864e5-3+((w1.getDay()+6)%7))/7); }
+function fmtIt(s){ const d=parseIso(s); return String(d.getDate()).padStart(2,"0")+"/"+String(d.getMonth()+1).padStart(2,"0")+"/"+d.getFullYear(); }
+function oraTurno(t){ const x=turnoById(t); return x&&x.orario ? x.orario.replace(/[–—]/g,"-") : turnoName(t); }
+const noMk = s => String(s||"").replace(/[*_]/g,"");
+// testo con stile: **grassetto**, *grassetto corsivo*, _corsivo_; "\n" va a capo
+function mk(s){ return String(s).split("\n").map(line=>{ const segs=[], re=/\*\*([^*]+)\*\*|\*([^*]+)\*|_([^_]+)_|([^*_]+)/g; let m;
+  while((m=re.exec(line))){ if(m[1]) segs.push({s:m[1],b:1}); else if(m[2]) segs.push({s:m[2],b:1,i:1}); else if(m[3]) segs.push({s:m[3],i:1}); else segs.push({s:m[4]}); }
+  return segs.length?segs:[{s:""}]; }); }
+function plain(s){ return String(s||"").split("\n").map(l=>[{s:l}]); }
+
+/* --- dati della settimana per il modulo --- */
+function datiStampa(mon,days,dd){
+  const pos={}; ana.dipendenti.forEach(e=>pos[e.id]={});
+  for(const d of days){ const st=compute(dd[d],d);
+    st.assenti.forEach(e=>pos[e.id][d]={ass:dd[d].assenze[e.id].tipo, nota:dd[d].assenze[e.id].nota||""});
+    st.riserve.forEach(e=>pos[e.id][d]={k:"R"});
+    st.senza.forEach(e=>pos[e.id][d]={k:"S"});
+    for(const r in st.slots) for(const t in st.slots[r]) st.slots[r][t].forEach(e=>pos[e.id][d]={k:r+"|"+t, rep:r, t}); }
+  const reps={}, rp=id=>reps[id]||(reps[id]={rows:{},giorn:[],nt:[],ris:[],abs:{},chg:[]});
+  const ab=["lun","mar","mer","gio","ven"];
+  const giorniTxt=idx=>{ const out=[]; let i=0; while(i<idx.length){ let j=i; while(j+1<idx.length&&idx[j+1]===idx[j]+1) j++;
+      out.push(j>i+1? ab[idx[i]]+"–"+ab[idx[j]] : j===i+1? ab[idx[i]]+", "+ab[idx[j]] : ab[idx[i]]); i=j+1; } return out.join(", "); };
+  for(const e of ana.dipendenti){
+    const p=pos[e.id], cnt={}; let best=null;
+    days.forEach(d=>{ const x=p[d]; if(!x||x.ass) return; cnt[x.k]=(cnt[x.k]||0)+1; if(!best||cnt[x.k]>cnt[best.k]) best=x; });
+    const home=repById(e.reparto)? e.reparto : null, wr=best&&best.rep ? best.rep : home;
+    if(best && best.rep){ const r=rp(best.rep);
+      if(best.t===NOTURNO) r.nt.push(e); else if(best.t===GIORN) r.giorn.push(e); else (r.rows[best.t]=r.rows[best.t]||[]).push(e); }
+    else if(best && best.k==="R" && home) rp(home).ris.push(e);
+    if(!wr) continue;
+    const abs={}; days.forEach((d,i)=>{ const x=p[d]; if(x&&x.ass) (abs[x.ass]=abs[x.ass]||[]).push(i); });
+    for(const [tp,idx] of Object.entries(abs)){ const m=rp(wr).abs; const nt=(p[days[idx[0]]]||{}).nota; (m[tp]=m[tp]||[]).push(e.nome+(idx.length===days.length?"":" ("+giorniTxt(idx)+")")+(nt?" ("+nt+")":"")); }
+    if(best){ const it=[];
+      days.forEach((d,i)=>{ const x=p[d]; if(!x||x.ass||x.k===best.k) return;
+        it.push(ab[i]+" "+(x.k==="R"?"non utilizzato":x.k==="S"?"senza reparto":(x.rep!==wr?repName(x.rep)+" ":"")+(x.t===NOTURNO?"da assegnare":turnoName(x.t).toLowerCase()))); });
+      if(it.length) rp(wr).chg.push(e.nome+": "+it.join(", ")); }
+  }
+  const byName=(a,b)=>a.nome.localeCompare(b.nome);
+  for(const id in reps){ const r=reps[id]; Object.values(r.rows).forEach(l=>l.sort(byName)); r.giorn.sort(byName); }
+  return reps;
+}
+// testo delle note di un reparto: note scritte a mano + (se richiesto) assenze, cambi, non utilizzati
+// note di un reparto: solo quello che scrive l'utente, niente di automatico
+function notaRep(r,id){ return ((week.note||{})[id]||"").trim(); }
+// sistema le persone di una riga nelle colonne del loro ruolo; chi non ha ruolo va nella prima colonna libera
+function fillCols(list,cols){
+  const cells=cols.map(()=>[]), rest=[], lastAuto=cols.map(c=>!!c.auto).lastIndexOf(true);
+  for(const e of list){ const r=normStr(e.ruolo), j=cols.findIndex(c=>c.m&&c.m.test(r)); if(j>=0&&!cells[j].length) cells[j].push(e); else rest.push({e,j}); }
+  for(const {e,j} of rest){ let k=cols.findIndex((c,i)=>c.auto&&!cells[i].length); if(k<0) k= j>=0? j : (lastAuto>=0?lastAuto:0); cells[k].push(e); }
+  return cells;
+}
+// separa i giornalieri: responsabile, attrezzista, altri
+function intestazione(r,lay){
+  const o={resp:[],attr:[],altri:[]}; if(!r) return o;
+  for(const e of r.giorn){ const ro=normStr(e.ruolo);
+    if(!lay.noResp && /respons|capo ?reparto/.test(ro)) o.resp.push(e); else if(lay.attr && /attrezz/.test(ro)) o.attr.push(e); else o.altri.push(e); }
+  return o;
+}
+
+/* --- costruzione del foglio (caselle in mm) --- */
+function buildSheets(mon,days,dd){
+  const reps=datiStampa(mon,days,dd), B=[];
+  const c=(c0,c1,y0,y1,o)=>{ B.push(Object.assign({x:PX[c0],w:PX[c1]-PX[c0],y:y0,h:y1-y0,lw:0.15},o||{})); };
+  const frame=(c0,c1,y0,y1)=>B.push({x:PX[c0],y:y0,w:PX[c1]-PX[c0],h:y1-y0,lw:0.5});
+  const nm=l=>l.map(e=>e.nome).join("\n");
+  const NT=(t,o)=>Object.assign({txt:t,wrap:1,fs:8.5,min:4.2},o||{});
+  const giornNote=(o,lay)=>o.altri.length && !lay.giornSlot && !lay.giornRow ? ["Giornaliero: "+o.altri.map(e=>e.nome).join(", ")] : [];
+  // intestazione del modulo
+  B.push({x:11,y:9.5,w:47,h:16.8,img:LOGO});
+  B.push({x:65.5,y:9,w:100,h:9,lab:"PROGRAMMA PERSONALE",fs:15});
+  B.push({x:130.1,y:19.8,w:69.9,h:5.8,lw:0.15,hdr:1});
+  B.push({x:130.1,y:19.8,w:52,h:5.8,lab:"_settimana_",fs:10});
+  B.push({x:182.1,y:19.8,w:17.9,h:5.8,lab:"**"+isoWeek(mon)+"**",fs:10});
+  // reparti 1 e 2: blocco a tutta larghezza
+  const grande=(id,y)=>{ const lay=LAY[id], r=reps[id], o=intestazione(r,lay);
+    c(0,6,y[0],y[1],{lab:lay.titolo,fill:lay.fill,fs:FS_TIT});
+    c(0,2,y[1],y[2],{lab:"Responsabile di produzione e\n*PREPOSTO di REPARTO*"}); c(2,3,y[1],y[2],{txt:nm(o.resp),wrap:1});
+    c(3,4,y[1],y[3],{lab:"_NOTE_",al:"r"}); c(4,6,y[1],y[3],NT(notaRep(r,id,giornNote(o,lay))));
+    c(0,2,y[2],y[3],{lab:"Attrezzista"}); c(2,3,y[2],y[3],{txt:nm(o.attr),wrap:1});
+    c(0,1,y[3],y[4],{lab:"turno"}); lay.cols.forEach((k,i)=>c(i+1,i+2,y[3],y[4],{lab:k.l}));
+    ORD.forEach((t,k)=>{ c(0,1,y[4+k],y[5+k],{txt:oraTurno(t),al:"c"});
+      fillCols((r&&r.rows[t])||[],lay.cols).forEach((l,i)=>c(i+1,i+2,y[4+k],y[5+k],{txt:nm(l),wrap:1})); });
+    frame(0,6,y[0],y[7]); };
+  grande("corrugar",[30.0,36.5,47.4,53.7,66.1,72.4,78.6,84.8]);
+  grande("polier",[87.7,94.2,105.1,111.3,123.8,130.1,136.3,142.5]);
+  // reparto 3 (sinistra) e reparto 4 (destra)
+  { const y=[145.7,151.9,163.0,175.5,181.7,188.0,194.2,200.2], lay=LAY.kingcor, r=reps.kingcor, o=intestazione(r,lay);
+    c(0,4,y[0],y[1],{lab:lay.titolo,fill:lay.fill,fs:FS_TIT});
+    c(0,2,y[1],y[2],{lab:"Responsabile di produzione e\n*PREPOSTO di REPARTO*"}); c(2,3,y[1],y[2],{txt:nm(o.resp),wrap:1}); c(3,4,y[1],y[2]);
+    c(0,1,y[2],y[3],{lab:"turno"}); lay.cols.forEach((k,i)=>c(i+1,i+2,y[2],y[3],{lab:k.l}));
+    ORD.forEach((t,k)=>{ c(0,1,y[3+k],y[4+k],{txt:oraTurno(t),al:"c"});
+      fillCols((r&&r.rows[t])||[],lay.cols).forEach((l,i)=>c(i+1,i+2,y[3+k],y[4+k],{txt:nm(l),wrap:1})); });
+    c(0,1,y[6],y[7],{lab:"_NOTE_",al:"r"}); c(1,4,y[6],y[7],NT(notaRep(r,"kingcor",giornNote(o,lay))));
+    frame(0,4,y[0],y[7]);
+    const lg=LAY.granulazione, rg=reps.granulazione, og=intestazione(rg,lg);
+    c(4,6,y[0],y[2],{lab:"REPARTO 4 -\nGRANULAZIONE e macinatura",fill:lg.fill,fs:11.5});
+    c(4,5,y[2],y[3],{lab:"turno"}); c(5,6,y[2],y[3],{lab:"operatore"});
+    ORD.forEach((t,k)=>{ const l=((rg&&rg.rows[t])||[]).slice(); if(t===lg.giornRow) l.unshift(...og.altri);
+      c(4,5,y[3+k],y[4+k],{txt:oraTurno(t),al:"c"}); c(5,6,y[3+k],y[4+k],{txt:nm(l),wrap:1}); });
+    c(4,6,y[6],y[7],NT(notaRep(rg,"granulazione")));
+    frame(4,6,y[0],y[7]); }
+  // reparto 5 (sinistra), magazzino e manutenzione (destra)
+  { const y=[203.3,209.8,219.2,225.4,231.6,237.9,244.1,250.3,256.6,262.8,269.0], lay=LAY.reparto5, r=reps.reparto5, o=intestazione(r,lay);
+    c(0,3,y[0],y[1],{lab:lay.titolo,fill:lay.fill,fs:FS_TIT});
+    c(0,2,y[1],y[2],{lab:"Responsabile di produzione e\n*PREPOSTO*"}); c(2,3,y[1],y[2],{txt:nm(o.resp),wrap:1});
+    c(0,2,y[2],y[3],{lab:"giornaliero"}); c(2,3,y[2],y[3],{txt:nm(o.altri.concat(o.attr)),wrap:1});
+    c(0,1,y[3],y[4],{lab:"turno"}); c(1,3,y[3],y[4],{lab:"filettatura e fessurazione"});
+    ORD.forEach((t,k)=>{ c(0,1,y[4+k],y[5+k],{txt:oraTurno(t),al:"c"});
+      fillCols((r&&r.rows[t])||[],lay.cols).forEach((l,i)=>c(i+1,i+2,y[4+k],y[5+k],{txt:nm(l),wrap:1})); });
+    [7,8].forEach(k=>{ c(0,1,y[k],y[k+1]); c(1,2,y[k],y[k+1]); c(2,3,y[k],y[k+1]); });
+    c(0,1,y[9],y[10],{lab:"_NOTE_",al:"r"}); c(1,3,y[9],y[10],NT(notaRep(r,"reparto5")));
+    frame(0,3,y[0],y[10]);
+    const tutti=x=>x? [].concat(x.giorn, ...Object.values(x.rows)).sort((a,b)=>a.nome.localeCompare(b.nome)) : [];
+    const slots=(list,n)=>{ const s=[]; for(let i=0;i<n;i++) s.push(i<n-1? list.slice(i,i+1) : list.slice(i)); return s; };
+    const lm=LAY.magazzino, rm=reps.magazzino, all=tutti(rm), resp=all.filter(e=>/respons|capo ?reparto/.test(normStr(e.ruolo))), altri=all.filter(e=>!resp.includes(e));
+    c(3,6,y[0],y[1],{lab:lm.titolo,fill:lm.fill,fs:FS_TIT});
+    c(3,5,y[1],y[2],{lab:"Responsabile e *PREPOSTO*"}); c(5,6,y[1],y[2],{txt:nm(resp),wrap:1});
+    slots(altri,9).forEach((l,i)=>{ const rr=2+Math.floor(i/3), cc=3+i%3; c(cc,cc+1,y[rr],y[rr+1],{txt:nm(l),wrap:1}); });
+    c(3,4,y[5],y[6],{lab:"_NOTE_",al:"r"}); c(4,6,y[5],y[6],NT(notaRep(rm,"magazzino")));
+    frame(3,6,y[0],y[6]);
+    const ln=LAY.manutenzione, rn=reps.manutenzione, mn=tutti(rn);
+    c(3,6,y[6],y[7],{lab:ln.titolo,fill:ln.fill,fs:FS_TIT});
+    slots(mn,3).forEach((l,i)=>{ c(3+i,4+i,y[7],y[8],{txt:nm(l),wrap:1});
+      c(3+i,4+i,y[8],y[9],l.some(e=>/prepost/.test(normStr(e.ruolo)))?{lab:"*PREPOSTO*"}:{}); });
+    c(3,4,y[9],y[10],{lab:"_NOTE_",al:"r"}); c(4,6,y[9],y[10],NT(notaRep(rn,"manutenzione")));
+    frame(3,6,y[6],y[10]); }
+  // piè di pagina
+  const ds=week.dataStampa||isoToday();
+  B.push({x:14,y:271.5,w:70,h:6,lab:"_DATA DI ELABORAZIONE_  "+fmtIt(ds),fs:10,al:"l"});
+  B.push({x:95,y:271.5,w:105,h:6,lab:"_RESPONSABILE DI STABILIMENTO_  "+noMk(ana.stampa.responsabile),fs:10,al:"r"});
+  B.push({x:10,y:279,w:80,h:5,lab:"_"+noMk(ana.stampa.modulo||" ")+"_",fs:8,al:"l"});
+  const pages=[B];
+  // reparti aggiunti in anagrafica che il modulo non prevede: seconda pagina
+  const extra=ana.reparti.filter(r=>!LAY[r.id]);
+  if(extra.length){ const P=[], cc=(x0,x1,y0,y1,o)=>P.push(Object.assign({x:x0,w:x1-x0,y:y0,h:y1-y0,lw:0.15},o||{}));
+    P.push({x:10,y:12,w:190,h:8,lab:"PROGRAMMA PERSONALE - altri reparti · **settimana "+isoWeek(mon)+"**",fs:12,al:"l"});
+    let y=26;
+    for(const rep of extra){ const r=reps[rep.id], o=intestazione(r,{attr:1}), righe=[];
+      if(o.resp.length) righe.push(["Responsabile",nm(o.resp).replace(/\n/g,", ")]);
+      if(o.attr.length||o.altri.length) righe.push(["giornaliero",nm(o.attr.concat(o.altri)).replace(/\n/g,", ")]);
+      ORD.forEach(t=>righe.push([oraTurno(t),((r&&r.rows[t])||[]).map(e=>e.nome).join(", ")]));
+      const h=6.3*(righe.length+2); if(y+h>285){ pages.push(P.splice(0)); y=14; }
+      cc(10,200,y,y+6.3,{lab:noMk(rep.nome).toUpperCase(),fill:"#E7E6E6",fs:FS_TIT});
+      righe.forEach((rw,i)=>{ const a=y+6.3*(i+1); cc(10,33.2,a,a+6.3,{txt:rw[0],al:"c"}); cc(33.2,200,a,a+6.3,{txt:rw[1],wrap:1}); });
+      const a=y+6.3*(righe.length+1); cc(10,33.2,a,a+6.3,{lab:"_NOTE_",al:"r"}); cc(33.2,200,a,a+6.3,NT(notaRep(r,rep.id)));
+      P.push({x:10,y,w:190,h,lw:0.5}); y+=h+4; }
+    if(P.length) pages.push(P); }
+  return pages;
+}
+
+/* --- impaginazione del testo dentro una casella --- */
+function fitBox(bx,measure){
+  const lines = bx.lab!=null ? mk(bx.lab) : bx.txt ? plain(bx.txt) : null;
+  if(!lines) return null;
+  const pad=1.1, W=bx.w-2*pad, H=bx.h-0.5, min=bx.min||5;
+  const lw=(segs,f)=>segs.reduce((a,g)=>a+measure(g.s,f,g.b,g.i),0);
+  for(let fs=bx.fs||(bx.lab!=null?FS_LAB:FS_NAME);;fs-=0.25){
+    let out=lines;
+    if(bx.wrap){ out=[]; for(const segs of lines){ const st=segs[0], words=segs.map(g=>g.s).join("").split(/ +/); let cur="";
+        for(const w of words){ const t=cur?cur+" "+w:w; if(cur && measure(t,fs,st.b,st.i)>W){ out.push([{b:st.b,i:st.i,s:cur}]); cur=w; } else cur=t; }
+        out.push([{b:st.b,i:st.i,s:cur}]); } }
+    const lh=fs*MM*1.13;
+    const ok = out.length*lh<=H && out.every(s=>lw(s,fs)<=W);
+    if(ok) return {fs,lines:out,lh};
+    if(fs<=min){
+      const maxL=Math.max(1,Math.floor(H/lh)), cut=out.length>maxL;
+      out=out.slice(0,maxL).map(s=>s.map(g=>Object.assign({},g)));
+      if(cut){ const L=out[out.length-1]; L[L.length-1].s+=" …"; }
+      out.forEach(s=>{ const g=s[s.length-1]; while(lw(s,fs)>W && g.s.length>2) g.s=g.s.replace(/ ?…$/,"").slice(0,-1)+"…"; });
+      return {fs,lines:out,lh};
+    }
+  }
+}
+function linePos(bx,f,k,width){
+  const total=f.lines.length*f.lh, top=bx.y+(bx.h-total)/2, base=top+f.lh*(k+0.5)+f.fs*MM*0.35;
+  const al=bx.al||(bx.lab!=null?"c":"l");
+  return {x: al==="c"? bx.x+bx.w/2-width/2 : al==="r"? bx.x+bx.w-1.1-width : bx.x+1.1, base};
+}
+function svgSheet(B){
+  const cv=svgSheet.cv||(svgSheet.cv=document.createElement("canvas").getContext("2d"));
+  const meas=(s,f,b,i)=>{ cv.font=(i?"italic ":"")+(b?"bold ":"")+f+"pt Helvetica, Arial, 'Liberation Sans', sans-serif"; return cv.measureText(s).width*25.4/96; };
+  let fills="", txt="", lines="";
+  for(const bx of B){
+    if(bx.fill) fills+=`<rect x="${bx.x}" y="${bx.y}" width="${bx.w}" height="${bx.h}" fill="${bx.fill}"/>`;
+    if(bx.img) fills+=`<image href="${bx.img}" x="${bx.x}" y="${bx.y}" width="${bx.w}" height="${bx.h}" preserveAspectRatio="xMidYMid meet"/>`;
+    const f=fitBox(bx,meas);
+    if(f) f.lines.forEach((segs,k)=>{ const w=segs.reduce((a,g)=>a+meas(g.s,f.fs,g.b,g.i),0), p=linePos(bx,f,k,w);
+      txt+=`<text x="${p.x.toFixed(2)}" y="${p.base.toFixed(2)}" font-size="${(f.fs*MM).toFixed(3)}">`+segs.map(g=>`<tspan${g.b?' font-weight="bold"':""}${g.i?' font-style="italic"':""}>${esc(g.s)}</tspan>`).join("")+`</text>`; });
+    if(bx.lw) lines+=`<rect x="${bx.x}" y="${bx.y}" width="${bx.w}" height="${bx.h}" fill="none" stroke="#000" stroke-width="${bx.lw}"/>`;
+  }
+  return `<svg class="sheet" viewBox="0 0 210 297" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, 'Liberation Sans', sans-serif" style="white-space:pre" role="img" aria-label="Anteprima del modulo"><rect width="210" height="297" fill="#fff"/>${fills}${txt}${lines}</svg>`;
+}
+function pdfSheet(doc,B){
+  const style=(b,i)=>b&&i?"bolditalic":b?"bold":i?"italic":"normal";
+  const meas=(s,f,b,i)=>{ doc.setFont("helvetica",style(b,i)); doc.setFontSize(f); return doc.getTextWidth(s); };
+  for(const bx of B){
+    if(bx.fill){ doc.setFillColor(bx.fill); doc.rect(bx.x,bx.y,bx.w,bx.h,"F"); }
+    if(bx.img) doc.addImage(bx.img,"JPEG",bx.x,bx.y,bx.w,bx.h);
+  }
+  doc.setTextColor(0,0,0);
+  for(const bx of B){ const f=fitBox(bx,meas); if(!f) continue;
+    f.lines.forEach((segs,k)=>{ const w=segs.reduce((a,g)=>a+meas(g.s,f.fs,g.b,g.i),0); let {x,base}=linePos(bx,f,k,w);
+      for(const g of segs){ doc.setFont("helvetica",style(g.b,g.i)); doc.setFontSize(f.fs); if(g.s) doc.text(g.s,x,base); x+=doc.getTextWidth(g.s); } }); }
+  doc.setDrawColor(0,0,0);
+  for(const bx of B) if(bx.lw){ doc.setLineWidth(bx.lw); doc.rect(bx.x,bx.y,bx.w,bx.h,"S"); }
+}
+
+/* --- Word (.docx): lo stesso foglio come tabella modificabile, costruita dalle caselle in mm --- */
+let jszipP=null;
+function loadJSZip(){
+  if(window.JSZip) return Promise.resolve(window.JSZip);
+  return jszipP||(jszipP=new Promise((ok,ko)=>{ const s=document.createElement("script");
+    s.src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+    s.onload=()=>window.JSZip? ok(window.JSZip) : (jszipP=null, ko(new Error("JSZip")));
+    s.onerror=()=>{ jszipP=null; s.remove(); ko(new Error("JSZip")); };
+    document.head.appendChild(s); }));
+}
+const TW=56.6929, EMU=36000;   // twip e EMU per millimetro
+const xEsc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const NIL=["top","left","bottom","right"].map(s=>`<w:${s} w:val="nil"/>`).join("");
+function wParas(lines,fs,al){
+  const jc=al==="c"?"center":al==="r"?"right":"left", sz=Math.round(fs*2);
+  return lines.map(segs=>`<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="228" w:lineRule="auto"/><w:jc w:val="${jc}"/></w:pPr>`+
+    segs.filter(g=>g.s).map(g=>`<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/>${g.b?"<w:b/>":""}${g.i?"<w:i/>":""}<w:sz w:val="${sz}"/><w:szCs w:val="${sz}"/></w:rPr><w:t xml:space="preserve">${xEsc(g.s)}</w:t></w:r>`).join("")+`</w:p>`).join("") || "<w:p/>";
+}
+const bxLines=bx=> bx.lab!=null ? mk(bx.lab) : bx.txt ? plain(bx.txt) : [[{s:""}]];
+const bxFs=bx=> bx.fs||(bx.lab!=null?FS_LAB:FS_NAME);
+const bxAl=bx=> bx.al||(bx.lab!=null?"c":"l");
+function wTable(cols,rowsXml){
+  return `<w:tbl><w:tblPr><w:tblW w:w="${Math.round(cols.reduce((a,b)=>a+b,0)*TW)}" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblBorders>${NIL}</w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="57" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="57" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${cols.map(c=>`<w:gridCol w:w="${Math.round(c*TW)}"/>`).join("")}</w:tblGrid>${rowsXml}</w:tbl>`;
+}
+const wSpacer=`<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="120" w:lineRule="exact"/></w:pPr></w:p>`;
+// tabella del modulo: una griglia con le colonne e le righe di tutte le caselle, celle unite dove servono
+function wGriglia(cells,frames){
+  const eps=0.05, uniq=a=>[...new Set(a.map(v=>Math.round(v*100)/100))].sort((p,q)=>p-q);
+  const xs=uniq(cells.flatMap(b=>[b.x,b.x+b.w])), ys=uniq(cells.flatMap(b=>[b.y,b.y+b.h]));
+  const near=(a,b)=>Math.abs(a-b)<eps, inR=(v,a,b)=>v>a-eps&&v<b+eps;
+  const spesso=(s,b)=>frames.some(f=>{
+    if(s==="top"||s==="bottom"){ const y=s==="top"?b.y:b.y+b.h, fy=s==="top"?f.y:f.y+f.h; return near(y,fy)&&inR(b.x,f.x,f.x+f.w)&&inR(b.x+b.w,f.x,f.x+f.w); }
+    const x=s==="left"?b.x:b.x+b.w, fx=s==="left"?f.x:f.x+f.w; return near(x,fx)&&inR(b.y,f.y,f.y+f.h)&&inR(b.y+b.h,f.y,f.y+f.h); });
+  let rows="";
+  for(let i=0;i<ys.length-1;i++){ const y0=ys[i], y1=ys[i+1]; let tcs="";
+    for(let c=0;c<xs.length-1;){
+      const x0=xs[c], b=cells.find(b=>b.x<x0+eps && b.x+b.w>x0+eps && b.y<y0+eps && b.y+b.h>y0+eps);
+      if(!b){ tcs+=`<w:tc><w:tcPr><w:tcW w:w="${Math.round((xs[c+1]-x0)*TW)}" w:type="dxa"/><w:tcBorders>${NIL}</w:tcBorders></w:tcPr><w:p/></w:tc>`; c++; continue; }
+      let span=0, c2=c; while(c2<xs.length-1 && xs[c2]<b.x+b.w-eps){ span++; c2++; }
+      const first=near(b.y,y0), multi=b.y+b.h>y1+eps || !first;
+      const bd=["top","left","bottom","right"].map(s=>`<w:${s} w:val="single" w:sz="${spesso(s,b)?12:4}" w:space="0" w:color="000000"/>`).join("");
+      tcs+=`<w:tc><w:tcPr><w:tcW w:w="${Math.round(b.w*TW)}" w:type="dxa"/>${span>1?`<w:gridSpan w:val="${span}"/>`:""}${multi?`<w:vMerge${first?' w:val="restart"':""}/>`:""}<w:tcBorders>${bd}</w:tcBorders>${b.fill?`<w:shd w:val="clear" w:color="auto" w:fill="${b.fill.replace("#","")}"/>`:""}<w:vAlign w:val="center"/></w:tcPr>${first? wParas(bxLines(b),bxFs(b),bxAl(b)) : "<w:p/>"}</w:tc>`;
+      c=c2;
+    }
+    rows+=`<w:tr><w:trPr><w:cantSplit/><w:trHeight w:val="${Math.round((y1-y0)*TW)}" w:hRule="atLeast"/></w:trPr>${tcs}</w:tr>`;
+  }
+  const cols=[]; for(let c=0;c<xs.length-1;c++) cols.push(xs[c+1]-xs[c]);
+  return wTable(cols,rows);
+}
+function wLogo(bx){
+  const cx=Math.round(bx.w*EMU), cy=Math.round(bx.h*EMU);
+  return `<w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:docPr id="1" name="Logo"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="1" name="logo.jpeg"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rIdLogo"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+}
+function wPagina(B){
+  const cells=B.filter(b=>b.lw && b.lw<0.3 && !b.hdr), frames=B.filter(b=>b.lw>=0.3);
+  const top=Math.min(...cells.map(b=>b.y)), bot=Math.max(...cells.map(b=>b.y+b.h));
+  const free=B.filter(b=>!b.lw && !b.img), logo=B.find(b=>b.img), week=B.find(b=>b.hdr);
+  let x="";
+  // intestazione
+  const sopra=free.filter(b=>b.y<top).sort((p,q)=>p.y-q.y);
+  if(logo){
+    const tit=sopra[0], wk=B.filter(b=>b.hdr||(!b.lw&&b.y>=19&&b.y<26&&b.x>=130));
+    const wkTxt=B.filter(b=>!b.lw && !b.img && b.x>=130 && b.y>=19 && b.y<26);
+    const cell=(w,inner,extra)=>`<w:tc><w:tcPr><w:tcW w:w="${Math.round(w*TW)}" w:type="dxa"/>${extra||""}<w:vAlign w:val="center"/></w:tcPr>${inner}</w:tc>`;
+    const wkBd=`<w:tcBorders>${["top","left","bottom","right"].map(s=>`<w:${s} w:val="single" w:sz="4" w:space="0" w:color="000000"/>`).join("")}</w:tcBorders>`;
+    const wkLines=[wkTxt.sort((p,q)=>p.x-q.x).flatMap(b=>mk(b.lab)[0].concat([{s:"          "}]))];
+    x+=wTable([55.5,64.6,69.9],
+      `<w:tr><w:trPr><w:trHeight w:val="${Math.round(9*TW)}" w:hRule="atLeast"/></w:trPr>${cell(55.5,wLogo(logo),'<w:vMerge w:val="restart"/>')}${cell(134.5, tit? wParas(mk(tit.lab),tit.fs||12,"c") : "<w:p/>", '<w:gridSpan w:val="2"/>')}</w:tr>`+
+      `<w:tr><w:trPr><w:trHeight w:val="${Math.round(6*TW)}" w:hRule="atLeast"/></w:trPr>${cell(55.5,"<w:p/>",'<w:vMerge/>')}${cell(64.6,"<w:p/>")}${week? cell(69.9, wParas(wkLines,10,"c"), wkBd) : cell(69.9,"<w:p/>")}</w:tr>`)+wSpacer;
+  } else sopra.forEach(b=>{ x+=wParas(mk(b.lab||b.txt||""),bxFs(b),bxAl(b)); });
+  if(!logo && sopra.length) x+=wSpacer;
+  if(cells.length) x+=wGriglia(cells,frames);
+  // piè di pagina: le caselle sulla stessa riga vanno in una tabella senza bordi
+  const sotto=free.filter(b=>b.y>=bot-0.01).sort((p,q)=>p.y-q.y||p.x-q.x), righe=[];
+  sotto.forEach(b=>{ const r=righe.find(r=>Math.abs(r[0].y-b.y)<1); if(r) r.push(b); else righe.push([b]); });
+  for(const r of righe){
+    x+=wSpacer;
+    if(r.length===1) x+=wParas(bxLines(r[0]),bxFs(r[0]),bxAl(r[0]));
+    else x+=wTable(r.map(()=>190/r.length), `<w:tr>${r.map(b=>`<w:tc><w:tcPr><w:tcW w:w="${Math.round(190/r.length*TW)}" w:type="dxa"/></w:tcPr>${wParas(bxLines(b),bxFs(b),bxAl(b))}</w:tc>`).join("")}</w:tr>`)+wSpacer;
+  }
+  return x;
+}
+async function creaDocx(pages){
+  const JSZip=await loadJSZip(), z=new JSZip();
+  const body=pages.map(wPagina).join(`<w:p><w:r><w:br w:type="page"/></w:r></w:p>`);
+  z.file("[Content_Types].xml",`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="jpeg" ContentType="image/jpeg"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`);
+  z.file("_rels/.rels",`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`);
+  z.file("word/_rels/document.xml.rels",`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rIdLogo" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/logo.jpeg"/></Relationships>`);
+  z.file("word/styles.xml",`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial" w:eastAsia="Arial"/><w:sz w:val="15"/><w:szCs w:val="15"/><w:lang w:val="it-IT"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0" w:line="228" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/><w:tblPr><w:tblInd w:w="0" w:type="dxa"/><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="57" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="57" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style></w:styles>`);
+  z.file("word/media/logo.jpeg", LOGO.split(",")[1], {base64:true});
+  z.file("word/document.xml",`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="454" w:right="567" w:bottom="397" w:left="567" w:header="0" w:footer="0" w:gutter="0"/></w:sectPr></w:body></w:document>`);
+  return z.generateAsync({type:"blob", mimeType:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
+}
+async function scaricaWord(){
+  if(!stampaCache) return;
+  const btn=$("docx"), {mon,days,dd}=stampaCache; btn.disabled=true; btn.textContent="Preparo il Word…";
+  try{
+    const blob=await creaDocx(buildSheets(mon,days,dd)), name="settimana "+isoWeek(mon)+" - PROGRAMMA PERSONALE.docx";
+    if(downloadsCap){
+      try{ await downloadsCap.save({filename:name, data:blob}); toast("Word salvato"); }
+      catch(e){ toast(e&&e.code==="declined" ? "Download annullato" : "Download non riuscito"); }
+    } else {
+      const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),5000); toast("Word salvato");
+    }
+  }catch(e){ toast("Non riesco a creare il Word: controlla la connessione e riprova."); }
+  finally{ const b=$("docx"); if(b){ b.disabled=false; b.textContent="Scarica Word"; } }
+}
+
+/* --- vista stampa --- */
+let stampaCache=null, jspdfP=null;
+function loadJsPDF(){
+  if(window.jspdf&&window.jspdf.jsPDF) return Promise.resolve(window.jspdf);
+  return jspdfP||(jspdfP=new Promise((ok,ko)=>{ const s=document.createElement("script");
+    s.src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+    s.onload=()=>window.jspdf&&window.jspdf.jsPDF? ok(window.jspdf) : (jspdfP=null, ko(new Error("jsPDF")));
+    s.onerror=()=>{ jspdfP=null; s.remove(); ko(new Error("jsPDF")); };
+    document.head.appendChild(s); }));
+}
+function renderStampa(){
+  const tok=++renderStampa.tok, mon=mondayOf(curDate), days=workdays(mon);
+  if(view==="stampa" && ana) drawStampa(mon,[mon],{[mon]:week});
+}
+renderStampa.tok=0;
+function drawSheets(){ if(!stampaCache||!$("sheets")) return; const {mon,days,dd}=stampaCache; $("sheets").innerHTML=buildSheets(mon,days,dd).map(svgSheet).join(""); }
+function drawStampa(mon,days,dd){
+  stampaCache={mon,days,dd};
+  const n=isoWeek(mon), st=ana.stampa, ids=Object.keys(LAY).filter(id=>repById(id)).concat(ana.reparti.filter(r=>!LAY[r.id]).map(r=>r.id));
+  let h=`<div class="dayhead noprint"><h1>Stampa · settimana ${n}</h1>
+    <div class="stats"><span>da <b>lunedì ${esc(fmtDM(mon))}</b> a <b>venerdì ${esc(fmtDM(addDays(mon,4)))}</b></span></div>
+    <div class="tools"><button class="btn small primary" id="pdf">Scarica PDF</button><button class="btn small primary" id="docx">Scarica Word</button>${backend.kind!=="db"?`<button class="btn small" id="prt">Stampa</button>`:""}<button class="btn small" id="gow">Vedi la settimana</button></div></div>
+    <div class="stampa"><aside class="panel stampa-side noprint">
+      <label class="f">Data di elaborazione (si aggiorna con Prepara settimana)<input type="date" id="sdata" value="${esc(week.dataStampa||isoToday())}"></label>
+      <label class="f">Responsabile di stabilimento<input type="text" id="sresp" value="${esc(st.responsabile||"")}"></label>
+      <div class="hint">Ogni persona compare nel reparto e nel turno che ha nella settimana. Nella riga del turno va nella colonna del suo ruolo (capoturno, vicecapoturno, operatore Bundle Fender, I, II o III operatore imballaggio): il ruolo si cambia nelle <a href="#schede">Schede</a>. Chi non ha un ruolo va nella prima colonna libera.</div>
+      <h4>Note per reparto</h4>
+      ${ids.map(id=>`<label class="f">${esc(LAY[id]?LAY[id].titolo:repName(id))}<textarea rows="2" data-sn="${id}" placeholder="Scrivi una nota">${esc((week.note||{})[id]||"")}</textarea></label>`).join("")}
+    </aside><div class="sheets" id="sheets"></div></div>`;
+  $("main").innerHTML=h;
+  drawSheets();
+  $("pdf").onclick=scaricaPdf; $("docx").onclick=scaricaWord;
+  if($("prt")) $("prt").onclick=()=>window.print();
+  $("gow").onclick=()=>{ location.hash="#settimana"; };
+  $("sdata").onchange=ev=>{ week.dataStampa=/^\d{4}-\d{2}-\d{2}$/.test(ev.target.value)?ev.target.value:null; saveWeek(); drawSheets(); };
+  $("sresp").onchange=ev=>{ ana.stampa.responsabile=ev.target.value.trim(); saveAna(); drawSheets(); };
+  document.querySelectorAll("textarea[data-sn]").forEach(ta=>{
+    ta.oninput=()=>{ week.note=week.note||{}; const v=ta.value; if(v.trim()) week.note[ta.dataset.sn]=v; else delete week.note[ta.dataset.sn];
+      clearTimeout(drawStampa._t); drawStampa._t=setTimeout(drawSheets,250); };
+    ta.onchange=()=>saveWeek();
+  });
+}
+async function scaricaPdf(){
+  if(!stampaCache) return;
+  const btn=$("pdf"), {mon,days,dd}=stampaCache; btn.disabled=true; btn.textContent="Preparo il PDF…";
+  try{
+    const {jsPDF}=await loadJsPDF();
+    const doc=new jsPDF({unit:"mm",format:"a4",orientation:"portrait"});
+    doc.setProperties({title:"settimana "+isoWeek(mon)+" - PROGRAMMA PERSONALE"});
+    buildSheets(mon,days,dd).forEach((B,i)=>{ if(i) doc.addPage(); pdfSheet(doc,B); });
+    const name="settimana "+isoWeek(mon)+" - PROGRAMMA PERSONALE.pdf", blob=doc.output("blob");
+    if(downloadsCap){
+      try{ await downloadsCap.save({filename:name, data:blob}); toast("PDF salvato"); }
+      catch(e){ toast(e&&e.code==="declined" ? "Download annullato" : "Download non riuscito"); }
+    } else {
+      const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),5000); toast("PDF salvato");
+    }
+  }catch(e){ toast("Non riesco a creare il PDF: controlla la connessione e riprova."); }
+  finally{ const b=$("pdf"); if(b){ b.disabled=false; b.textContent="Scarica PDF"; } }
+}
+
+/* ---------- render principale ---------- */
+function typing(){ const a=document.activeElement; return a && a.closest && a.closest("#main input[type=text],#main input[type=number],#main select,#main textarea"); }
+function render(){
+  ["w","p","s","l","a"].forEach(k=>$("t-"+k).classList.toggle("on", {w:"settimana",p:"stampa",s:"schede",l:"l104",a:"anagrafica"}[k]===view));
+  $("datenav").style.visibility = view==="anagrafica" ? "hidden" : "visible";
+  $("date").value=curDate;
+  $("prev").setAttribute("aria-label", perSettimana()?"Settimana precedente":"Giorno precedente");
+  $("next").setAttribute("aria-label", perSettimana()?"Settimana successiva":"Giorno successivo");
+  if(!ana){ if(loginState) schermataAccesso(...loginState); else $("main").innerHTML=`<div class="empty">Caricamento dei dati…</div>`; return; }
+  if(typing()||ptrDown){ anaDirty=true; return; }
+  if(view==="anagrafica"){ renderAna(); return; }
+  if(!ana.reparti.length){ $("main").innerHTML=`<div class="empty"><p>Non ci sono ancora reparti.</p><a class="btn primary" href="#impostazioni">Apri le impostazioni</a></div>`; return; }
+  if(view==="schede"){ renderSchede(); return; }
+  if(view==="stampa"){ renderStampa(); return; }
+  if(view==="l104"){ renderL104(); return; }
+  renderSett();
+}
+function flushRender(){ if(anaDirty && !typing() && !ptrDown){ anaDirty=false; render(); } }
+document.addEventListener("pointerdown",()=>{ ptrDown=true; },true);
+document.addEventListener("pointerup",()=>{ ptrDown=false; setTimeout(flushRender,0); },true);
+document.addEventListener("pointercancel",()=>{ ptrDown=false; setTimeout(flushRender,0); },true);
+document.addEventListener("focusout",()=>{ if(anaDirty) setTimeout(flushRender,50); });
+
+function subscribeDay(){
+  if(unsubDay) unsubDay();
+  dayLoaded=true;   // niente più giornate: assenze e spostamenti stanno nella settimana
+}
+function subscribeWeekIfNeeded(force){
+  if(!backend) return;
+  const m=mondayOf(curDate); if(!force && m===weekMon) return;
+  if(unsubWeek) unsubWeek();
+  weekMon=m; week=normWeek(null); day=week; weekLoaded=false;
+  unsubWeek=backend.sub(weekPath(m), d=>{ if(m!==weekMon) return; const first=!weekLoaded; week=normWeek(d); day=week; weekLoaded=true; if(applicaMalattie()){ saveWeek(); autoRicalcolo(); } if(view!=="anagrafica") render();
+    // settimana mai calcolata (corrente o futura): la prepara da sola, così ogni turno ha le persone previste
+    if(first && !week.dataStampa && m>=mondayOf(isoToday())) autoRicalcolo(); }, ()=>{});
+}
+function fixDate(){ if(dateFixed) return; dateFixed=true; const sd=startDate(ana.prepDow); if(sd!==curDate){ curDate=sd; subscribeDay(); subscribeWeekIfNeeded(); } }
+function goDate(d){ if(!d) return; curDate=d; subscribeDay(); subscribeWeekIfNeeded(); render(); }
+function perSettimana(){ return true; }
+$("prev").onclick=()=>goDate(perSettimana()? addDays(curDate,-7) : stepWork(curDate,-1));
+$("next").onclick=()=>goDate(perSettimana()? addDays(curDate,7) : stepWork(curDate,1));
+$("today").onclick=()=>goDate(isoToday());
+$("date").onchange=ev=>goDate(ev.target.value);
+
+// la vista "anagrafica" ora si chiama Impostazioni (#impostazioni); il vecchio indirizzo #anagrafica funziona ancora
+function route(){ const h=location.hash.replace("#",""); view = (h==="impostazioni"||h==="anagrafica") ? "anagrafica" : (h==="schede"||h==="stampa"||h==="l104") ? h : "settimana"; render(); }
+window.addEventListener("hashchange",route);
+
+/* ---------- avvio ---------- */
+// collega la pagina ai dati (anagrafica + settimana corrente) una volta scelto il backend
+let unsubAna=null;
+function collega(){
+  loginState=null;
+  const timer=setTimeout(()=>{ if(!ana) $("main").innerHTML=`<div class="empty">I dati non sono ancora raggiungibili. Controlla la connessione: la pagina si aggiorna da sola appena risponde.</div>`; },10000);
+  unsubAna=backend.sub("dati/anagrafica", d=>{
+      clearTimeout(timer);
+      if(!d || (d.versione||2) < ((window.DATI_INIZIALI&&window.DATI_INIZIALI.versione)||4)){
+        // primo avvio o dati della versione precedente (giornaliera): parte dall'elenco del personale e tiene una copia di sicurezza
+        if(d && !migrated){ migrated=true; save("dati/anagrafica_prec", d); }
+        if(window.DATI_INIZIALI){ ana=normAna(clone(window.DATI_INIZIALI)); saveAna(); fixDate(); render(); return; }
+      }
+      ana=normAna(d); fixDate(); if(weekLoaded && applicaMalattie()){ saveWeek(); autoRicalcolo(); } render(); },
+    err=>{ clearTimeout(timer);
+      if(err && err.code==="permission-denied" && backend.kind==="firebase") schermataAccesso("L’account "+((fbUser&&fbUser.email)||"")+" non è autorizzato a usare il programma. Chiedi al responsabile di aggiungerlo, oppure esci ed entra con un altro account.", true);
+      else $("main").innerHTML=`<div class="empty">Impossibile leggere l’anagrafica.</div>`; });
+  subscribeDay(); subscribeWeekIfNeeded(true);
+}
+function scollega(){
+  if(unsubAna){ unsubAna(); unsubAna=null; } if(unsubWeek){ unsubWeek(); unsubWeek=null; }
+  backend=null; ana=null; weekMon=""; weekLoaded=false; dateFixed=false; readOnly=false;
+}
+// Firebase (fuori da Claude): carica le librerie e la configurazione, poi chiede l'accesso con Google
+const FB_VER="10.14.1";
+let fbUser=null;
+function loadScript(src){ return new Promise((ok,ko)=>{ const s=document.createElement("script"); s.src=src; s.onload=ok; s.onerror=()=>{ s.remove(); ko(new Error(src)); }; document.head.appendChild(s); }); }
+let loginState=null;   // schermata di accesso mostrata (resta anche cambiando scheda)
+function schermataAccesso(msg,conEsci){
+  loginState=[msg,conEsci];
+  $("main").innerHTML=`<div class="login"><h1>Programma settimanale personale</h1><p>Entra con il tuo account Google. Possono usare il programma solo i colleghi autorizzati.</p>
+    ${conEsci?`<button class="btn" id="loginEsci">Esci ed entra con un altro account</button>`:`<button class="btn primary gbtn" id="loginGo"><svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C36.9 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>Accedi con Google</button>`}
+    ${msg?`<div class="err">${esc(msg)}</div>`:""}</div>`;
+  if($("loginGo")) $("loginGo").onclick=async()=>{ const auth=firebase.auth(), pr=new firebase.auth.GoogleAuthProvider(); pr.setCustomParameters({prompt:"select_account"});
+    try{ await auth.signInWithPopup(pr); }
+    catch(e){ if(e && /popup-blocked|operation-not-supported/.test(e.code||"")) auth.signInWithRedirect(pr);
+      else if(!(e && /popup-closed|cancelled-popup/.test(e.code||""))) schermataAccesso("Accesso non riuscito"+(e&&e.code?" ("+e.code+")":"")+"."); } };
+  if($("loginEsci")) $("loginEsci").onclick=()=>firebase.auth().signOut();
+}
+async function avviaFirebase(){
+  setSync("Connessione a Firebase…");
+  try{
+    if(!window.FIREBASE_CONFIG) await loadScript("firebase-config.js").catch(()=>{});
+    const cf=window.FIREBASE_CONFIG; if(!(cf && cf.apiKey && cf.projectId && !/INCOLLA/.test(cf.apiKey+cf.projectId))) return false;   // configurazione mancante o non compilata
+    for(const m of ["app","auth","firestore"]) await loadScript(`https://www.gstatic.com/firebasejs/${FB_VER}/firebase-${m}-compat.js`);
+  }catch(e){ $("main").innerHTML=`<div class="empty">Non riesco a caricare Firebase: controlla la connessione e ricarica la pagina.</div>`; return true; }
+  firebase.initializeApp(window.FIREBASE_CONFIG);
+  const auth=firebase.auth();
+  auth.getRedirectResult().catch(e=>schermataAccesso("Accesso non riuscito"+(e&&e.code?" ("+e.code+")":"")+"."));
+  $("esci").onclick=()=>auth.signOut();
+  auth.onAuthStateChanged(u=>{
+    if(!u){ fbUser=null; scollega(); $("utente").hidden=true; setSync("Non collegato"); schermataAccesso(); return; }
+    if(fbUser && fbUser.uid===u.uid && backend) return;
+    fbUser=u; $("uemail").textContent=u.email||""; $("utente").hidden=false;
+    backend=makeDbBackend(firebase.firestore(),"firebase");
+    setSync("Collegato: dati condivisi");
+    collega();
+  });
+  return true;
+}
+async function start(){
+  let db=null;
+  try{ if(window.claude && typeof window.claude.use==="function") db=await window.claude.use("db"); }catch(e){ db=null; }
+  if(db){
+    backend=makeDbBackend(db,"db"); setSync("Collegato: dati condivisi");
+    try{ downloadsCap=await window.claude.use("downloads"); }catch(e){ downloadsCap=null; }
+    try{ const user=await window.claude.use("user"); if(user && typeof user.can==="function"){ const c=await user.can("data.write"); if(c===false){ readOnly=true; setSync("Sola consultazione"); } } }catch(e){}
+    collega(); return;
+  }
+  if(!window.claude && await avviaFirebase()) return;
+  backend=makeLocalBackend(); setSync("Dati salvati solo su questo browser"); collega();
+}
+route();
+start();
+})();
+</script>
+</body>
+</html>
